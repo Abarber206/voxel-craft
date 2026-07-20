@@ -14,6 +14,11 @@
  * Assign the on* callbacks BEFORE calling host()/join() so no events are missed.
  */
 class VoxelNet {
+  // Party size cap. Every guest's state is relayed to every other guest, so traffic
+  // grows with the square of the party — 4 players is the comfortable ceiling for a
+  // browser star topology on the public broker. MAX_PEERS is guests, so host + 3.
+  static MAX_PEERS = 3;
+
   constructor() {
     // User-assignable callbacks (all optional, default no-op).
     this.onPeerJoin  = function () {}; // (peerId)
@@ -22,6 +27,7 @@ class VoxelNet {
     this.onBlock     = function () {}; // (edit, fromPeerId)
     this.onDrop      = function () {}; // (drop, fromPeerId)
     this.onPickup    = function () {}; // (drop, fromPeerId)
+    this.onFull      = function () {}; // host refused us: party is full
     this.onWorld     = function () {}; // ({seed, edits})
     this.onStatus    = function () {}; // (humanReadableString)
     this._joinTimer  = null;
@@ -226,6 +232,15 @@ class VoxelNet {
     const id = conn.peer;
     const old = this._conns.get(id);
     if (old && old !== conn) { this._silence(old); try { old.close(); } catch (e) {} }
+    // Hard cap. The star topology has no natural limit, but every guest's state is
+    // relayed to every other guest, so traffic grows with the SQUARE of the party.
+    // Refusing the extra player politely beats letting the session degrade for all.
+    if (!old && this._conns.size >= VoxelNet.MAX_PEERS) {
+      this._safeSend(conn, { t: 'full', max: VoxelNet.MAX_PEERS + 1 });
+      this._status('Game full — refused a join (' + (VoxelNet.MAX_PEERS + 1) + ' players max)');
+      setTimeout(() => { try { conn.close(); } catch (e) {} }, 250);   // let the message land
+      return;
+    }
     this._conns.set(id, conn);
     for (const [otherId, c] of this._conns) {     // introduce newcomer <-> existing guests
       if (otherId === id) continue;
@@ -279,6 +294,10 @@ class VoxelNet {
       switch (msg.t) {
         case 's': if (Array.isArray(msg.ps)) this._fire('onState', hostId, msg.ps); break;
         case 'b': if (this._isEdit(msg.e)) this._fire('onBlock', msg.e, hostId); break;
+        case 'full':
+          this._status('That game is full (' + (msg.max || 4) + ' players max)');
+          this._fire('onFull');
+          break;
         case 'd': if (msg.d && typeof msg.d === 'object') this._fire('onDrop', msg.d, hostId); break;
         case 'k': if (msg.d && typeof msg.d === 'object') this._fire('onPickup', msg.d, hostId); break;
         case 'w':

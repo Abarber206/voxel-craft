@@ -30,7 +30,7 @@ const sb = { self: { postMessage: m => { received = m; } }, performance, console
 vm.createContext(sb);
 vm.runInContext(html.match(/\/\*__WORKER_SRC_BEGIN__\*\/([\s\S]*?)\/\*__WORKER_SRC_END__\*\//)[1]
     .replace('self.onmessage = function (e) {',
-             'self.__terrain = { heightAt, noiseFor, caveAt, density };\nself.onmessage = function (e) {')
+             'self.__terrain = { heightAt, noiseFor, caveAt, density, trunkAt };\nself.onmessage = function (e) {')
     + '\nworkerMain.call(self);', sb);
 const run = m => { received = null; sb.self.onmessage({ data: m }); return received; };
 const T = sb.self.__terrain;
@@ -815,6 +815,86 @@ const groundTop = (wx, wz) => {
     check('Y opens and closes the inventory', /yBtn && !padPrev\[k2\]\.y && gameState === 'playing'\) toggleInventory/.test(html));
 
     check('trees vary in height within a species', /const tall = r \* r \* r/.test(html));
+}
+
+// ---- 25. four-player parties -------------------------------------------------
+{
+    const netSrc = fs.readFileSync(path.join(here, 'net-module.js'), 'utf8');
+    const ctx6 = { console, setTimeout, clearTimeout, Peer: class {}, window: {} };
+    vm.createContext(ctx6);
+    vm.runInContext(netSrc + '\nthis.VoxelNet = VoxelNet;', ctx6);
+    const Net = ctx6.VoxelNet;
+    check('the party cap is declared, not implicit', Net.MAX_PEERS === 3,
+        'host + ' + Net.MAX_PEERS + ' = ' + (Net.MAX_PEERS + 1) + ' players');
+
+    const net = new Net();
+    net._isHost = true;
+    const sent = [];
+    net._safeSend = (c, m) => sent.push([c.peer, m]);
+    net._status = () => {};
+    const joined = [];
+    net.onPeerJoin = id => joined.push(id);
+    for (let i = 1; i <= 6; i++) net._addGuest({ peer: 'g' + i, close() {}, on() {} });
+    check('a full party accepts exactly three guests', net._conns.size === 3, net._conns.size + ' guests');
+    check('and fires join for each of them', joined.length === 3, joined.join(','));
+    check('extras are refused politely rather than silently dropped',
+        sent.filter(([, m]) => m.t === 'full').length === 3);
+    check('a reconnecting guest is not counted twice', (() => {
+        const before = net._conns.size;
+        net._addGuest({ peer: 'g1', close() {}, on() {} });     // same id again
+        return net._conns.size === before;
+    })());
+    check('guests understand the refusal', /case 'full':/.test(netSrc) && /onFull/.test(netSrc));
+    check('and the game tells the player', /net\.onFull = \(\)/.test(html) &&
+        /That game is full/.test(html));
+    check('the party size is shown while connected', /players'/.test(html) && /VoxelNet\.MAX_PEERS \+ 1/.test(html));
+    check('state carries per-peer split-screen players, so 4 machines is not the ceiling',
+        /players\.slice\(0, splitMode \? 2 : 1\)/.test(html));
+}
+
+// ---- 26. tall trees are real trees, not bare poles ---------------------------
+{
+    // Crown volume must grow with trunk height, or the tall variants read as missing.
+    const n2 = T.noiseFor(SEED);
+    const heights = { oak: [], birch: [] };
+    for (let x = -600; x < 600; x++) for (let z = -600; z < 600; z += 3) {
+        const tr = T.trunkAt(n2, x, z, SEED);
+        if (tr) heights[tr.birch ? 'birch' : 'oak'].push(tr.H);
+    }
+    const span = a => [Math.min(...a), Math.max(...a)];
+    const [oMin, oMax] = span(heights.oak), [bMin, bMax] = span(heights.birch);
+    check('oaks come in short and tall', oMax - oMin >= 4, 'H ' + oMin + '-' + oMax);
+    check('birches too, and taller on average', bMax - bMin >= 4 && bMax > oMax,
+        'H ' + bMin + '-' + bMax);
+    check('tall trees are uncommon, not the norm',
+        heights.oak.filter(h => h >= oMax - 1).length / heights.oak.length < 0.2);
+
+    // measure real leaf volume per height from generated voxels
+    const leafByH = {};
+    for (let x = -R * CS + 6; x < R * CS - 6; x++) for (let z = -R * CS + 6; z < R * CS - 6; z++) {
+        const tr = T.trunkAt(n2, x, z, SEED);
+        if (!tr) continue;
+        const LOGI = tr.birch ? BIRCH_LOG : LOG, LEAFI = tr.birch ? BIRCH_LEAVES : LEAVES;
+        if (at(x, tr.surf + 1, z) !== LOGI) continue;
+        const top = tr.surf + tr.H;
+        let leaves = 0, trunkOk = true;
+        for (let y = tr.surf + 1; y <= top; y++) if (at(x, y, z) !== LOGI) trunkOk = false;
+        for (let dy = -8; dy <= 2; dy++) for (let dx = -4; dx <= 4; dx++) for (let dz = -4; dz <= 4; dz++)
+            if (at(x + dx, top + dy, z + dz) === LEAFI) leaves++;
+        (leafByH[tr.H] = leafByH[tr.H] || []).push({ leaves, trunkOk });
+    }
+    const hs = Object.keys(leafByH).map(Number).sort((a, b) => a - b);
+    check('trees of several heights actually generated', hs.length >= 4, 'heights ' + hs.join(','));
+    const allTrunks = hs.every(h => leafByH[h].every(t => t.trunkOk));
+    check('every trunk is solid from base to crown', allTrunks);
+    const avg = h => leafByH[h].reduce((s, t) => s + t.leaves, 0) / leafByH[h].length;
+    const short = hs[0], tall = hs[hs.length - 1];
+    check('a tall tree carries at least as much foliage as a short one',
+        avg(tall) >= avg(short) * 0.95,
+        'H' + short + ' avg ' + avg(short).toFixed(0) + ' leaves vs H' + tall + ' avg ' + avg(tall).toFixed(0));
+    check('no tree is a bare pole', hs.every(h => avg(h) > 40),
+        hs.map(h => 'H' + h + ':' + avg(h).toFixed(0)).join(' '));
+    check('the trunk scan skirt covers the widest crown', /tx = x0 - 4/.test(html));
 }
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');

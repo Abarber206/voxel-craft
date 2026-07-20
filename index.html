@@ -601,18 +601,24 @@
                     if (kind) { if (data[i] === 0) data[i] = leaf; }
                     else if (data[i] === 0 || data[i] === 8 || data[i] === 40) data[i] = log;
                 };
-                // scan all trunk columns whose radius-3 canopy can reach the padded region
-                for (let tx = x0 - 3; tx <= x0 + PS + 2; tx++)
-                    for (let tz = z0 - 3; tz <= z0 + PS + 2; tz++) {
+                // Scan every trunk whose crown could reach this padded region. Must be
+                // >= the largest canopy radius or tall trees lose leaves at chunk seams.
+                for (let tx = x0 - 4; tx <= x0 + PS + 3; tx++)
+                    for (let tz = z0 - 4; tz <= z0 + PS + 3; tz++) {
                         const tr = trunkAt(n, tx, tz, seed);
                         if (!tr) continue;
                         const top = tr.surf + tr.H;
                         // Rounded canopy instead of two flat 5x5 slabs stacked on a 3x3.
                         // Radius tapers with height and the edge is nibbled by a hash, so
                         // crowns read as leafy blobs rather than obvious cubes.
+                        // Crown scales with the trunk. A fixed 4-layer crown on an
+                        // 11-block trunk left a bare pole with a tuft on top — the tall
+                        // variants read as "missing" rather than tall. Big trees get
+                        // both more layers and a wider spread.
+                        const big = Math.max(0, tr.H - (tr.birch ? 7 : 5));   // 0..4 extra
                         const shape = tr.birch
-                            ? [[-3, 2], [-2, 2], [-1, 2], [0, 1]]            // slim and tall
-                            : [[-2, 2], [-1, 3], [0, 2], [1, 1]];            // broad and round
+                            ? [[-4 - big, 1], [-3 - big, 2], [-3, 2], [-2, 3], [-1, 2], [0, 1]]
+                            : [[-3 - big, 2], [-2, 3], [-1, 3], [0, 2], [1, 1]];
                         // Keep the canopy clear of the ground: leaves must start at least
                         // three blocks up the trunk, or short trees end up as bushes with
                         // foliage resting on the grass.
@@ -3754,7 +3760,12 @@
         }
 
         if (net) {
-            net.onStatus = s => { statusEl.textContent = (sessionCode ? 'code: ' + sessionCode + ' · ' : '') + s; };
+            net.onStatus = s => {
+                const party = 1 + (net.peerCount || 0) + (splitMode ? 1 : 0);
+                const tag = sessionCode ? 'code ' + sessionCode.toUpperCase() + ' · ' : '';
+                const size = net.peerCount ? ' · ' + party + '/' + (VoxelNet.MAX_PEERS + 1) + ' players' : '';
+                statusEl.textContent = tag + s + size;
+            };
             net.onPeerJoin = pid => {
                 ensureRemote(pid);
                 if (net.isHost) net.sendWorld(pid, { seed: SEED, edits: serializeEdits(), mode: worldMode });
@@ -3774,6 +3785,12 @@
                         }
                     } else { r.t[i] = null; r.groups[i].visible = false; } // peer left split mode
                 }
+            };
+            net.onFull = () => {
+                sessionCode = null;
+                setNetUI('idle');
+                toast('That game is full (4 players max)');
+                if (typeof mpStatus !== 'undefined' && mpStatus) mpStatus.textContent = 'That game is full — 4 players max.';
             };
             net.onBlock = e => setBlock(e.x, e.y, e.z, e.id, true);
             net.onDrop = d => spawnDrop(d.id, d.n | 0, +d.x, +d.y, +d.z,

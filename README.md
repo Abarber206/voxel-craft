@@ -22,7 +22,9 @@ cycle, split-screen co-op, and online multiplayer over WebRTC.
 ## Multiplayer
 
 Networking is peer-to-peer over WebRTC using the public PeerJS broker, so there is nothing
-to host or configure. One player hosts and shares a 5-character code.
+to host or configure. One player hosts and shares a 5-character code. **Up to 4 players** —
+the host plus three guests, and each machine can add a second player in split-screen. A
+fifth connection is refused with a message rather than being allowed to degrade the session.
 
 **To host:** click **Host game** (top right), then **Copy invite link** and send it to a
 friend. Opening that link joins your game automatically — no typing, no code to read out.
