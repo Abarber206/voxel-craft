@@ -217,5 +217,88 @@ const groundTop = (wx, wz) => {
     check('limbs hang from a pivot group instead', /function limb\(/.test(html));
 }
 
+// ---- 8. mobs must actually clear a one-block step ---------------------------
+{
+    // Apex of a jump is v^2/2g. The reported bug was mobs getting stuck on single
+    // blocks: the old 7.4 gave 1.014 blocks, which a discrete timestep rounds away.
+    const num = re => { const m = re.exec(html); return m ? parseFloat(m[1]) : NaN; };
+    const GRAV = num(/const GRAV = ([\d.]+)/);
+    const MOB_JUMPV = num(/const MOB_JUMPV = ([\d.]+)/);
+    const JUMPV = num(/JUMPV = ([\d.]+)/);
+    check('mob jump constant is defined', Number.isFinite(MOB_JUMPV) && Number.isFinite(GRAV));
+    const apex = (MOB_JUMPV * MOB_JUMPV) / (2 * GRAV);
+    check('a mob jump clears a full block with margin', apex >= 1.15,
+        apex.toFixed(3) + ' blocks');
+    check('but not so high they hop over walls', apex < 2, apex.toFixed(3) + ' blocks');
+    check('players still jump at least as high as mobs',
+        (JUMPV * JUMPV) / (2 * GRAV) >= apex);
+    // simulate the real fixed step to be sure discretisation doesn't eat it
+    let y = 0, v = MOB_JUMPV, peak = 0;
+    for (let i = 0; i < 200; i++) { v -= GRAV * (1 / 60); y += v * (1 / 60); peak = Math.max(peak, y); if (y < 0) break; }
+    check('and it still clears a block when stepped at 60Hz', peak >= 1.05, peak.toFixed(3) + ' blocks');
+}
+
+// ---- 9. mouse look must not be at the mercy of OS acceleration --------------
+{
+    check('pointer lock asks for unadjusted movement', /unadjustedMovement:\s*true/.test(html));
+    check('and falls back when the browser refuses it', /catch\([\s\S]{0,80}requestPointerLock\(\)/.test(html));
+    check('look deltas are normalised by device pixel ratio', /devicePixelRatio/.test(html));
+    check('a single event cannot spin the view wildly', /Math\.min\(600,\s*Math\.abs|Math\.min\(600/.test(html));
+    const m = /id="setSens"[^>]*min="(\d+)"/.exec(html);
+    check('sensitivity can be turned genuinely low', m && +m[1] <= 10, m ? 'min ' + m[1] : 'not found');
+}
+
+// ---- 10. invite links -------------------------------------------------------
+{
+    // Reproduce the shipped parser so the accepted formats are pinned down.
+    const src = /function parseCode\(raw\) \{[\s\S]*?\n        \}/.exec(html);
+    check('parseCode exists', !!src);
+    const parseCode = new Function('raw', src[0].replace(/^function parseCode\(raw\) \{/, '') .replace(/\}$/, ''));
+    const cases = [
+        ['abc12', 'abc12'], ['ABC12', 'abc12'], ['  abc12  ', 'abc12'],
+        ['voxel-abc12', 'abc12'], ['VOXEL-ABC12', 'abc12'],
+        ['https://abarber206.github.io/voxel-craft/?join=abc12', 'abc12'],
+        ['https://example.com/game?x=1&join=ABC12#frag', 'abc12']
+    ];
+    let ok = 0;
+    for (const [input, want] of cases) { if (parseCode(input) === want) ok++; else console.log('        ' + JSON.stringify(input) + ' -> ' + parseCode(input) + ' (wanted ' + want + ')'); }
+    check('codes, prefixed codes and full invite links all parse', ok === cases.length, ok + '/' + cases.length);
+    check('an invite in the URL is honoured', /searchParams|[?&#]join=/.test(html) && /urlJoin/.test(html));
+    check('there is a one-click copy for the invite', /clipboard\.writeText/.test(html));
+}
+
+// ---- 11. dropped items ------------------------------------------------------
+{
+    check('mined blocks spawn a pickup instead of teleporting into the bag',
+        /spawnDrop\(itemId, 1, hit\.x/.test(html));
+    check('mob kills drop loot on the ground too', /spawnDrop\(m\.def\.drop/.test(html));
+    check('drops merge into nearby piles rather than stacking up entities',
+        /DROP_MERGE_R/.test(html));
+    check('drops expire so a long session cannot leak entities', /DROP_LIFE/.test(html));
+    check('a fresh drop cannot be re-collected instantly', /arm:/.test(html) && /d\.arm > 0/.test(html));
+    check('a full inventory leaves the item lying instead of destroying it',
+        /left === d\.n\) break/.test(html));
+    check('drops and pickups are broadcast to peers',
+        /sendDrop/.test(html) && /sendPickup/.test(html));
+}
+
+// ---- 12. split-screen and mouse-free play -----------------------------------
+{
+    check('there is a hand rig per local player', /handRigs\s*=\s*\[makeHandRig\(0\), makeHandRig\(1\)\]/.test(html));
+    check('the hand pass is no longer disabled in split mode',
+        !/const active = !splitMode/.test(html));
+    check('each split viewport draws its own arm layer', /handCamera\.layers\.set\(i \+ 1\)/.test(html));
+    check('arm geometry is translated once, not per rig',
+        /armForeGeo\.translate/.test(html) && !/armFore\.geometry\.translate/.test(html));
+    const gs = fs.readFileSync(path.join(here, 'game-systems.js'), 'utf8');
+    check('the inventory has a keyboard/gamepad slot cursor',
+        /moveFocus\(dx, dy\)/.test(gs) && /activateFocus\(button, shift\)/.test(gs));
+    check('slot navigation is geometric, so it works in every panel layout',
+        /getBoundingClientRect/.test(gs));
+    check('player 2 gets a cursor placed for them on open', /if \(i > 0\) invUI\.moveFocus/.test(html));
+    check('held tools are rolled the opposite way to upright sprites',
+        /diagonal \? 0\.22 : -0\.4/.test(html));
+}
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);

@@ -20,6 +20,8 @@ class VoxelNet {
     this.onPeerLeave = function () {}; // (peerId)
     this.onState     = function () {}; // (peerId, players)
     this.onBlock     = function () {}; // (edit, fromPeerId)
+    this.onDrop      = function () {}; // (drop, fromPeerId)
+    this.onPickup    = function () {}; // (drop, fromPeerId)
     this.onWorld     = function () {}; // ({seed, edits})
     this.onStatus    = function () {}; // (humanReadableString)
     this._joinTimer  = null;
@@ -177,6 +179,16 @@ class VoxelNet {
     if (this._isEdit(edit)) this._broadcast({ t: 'b', e: { x: edit.x, y: edit.y, z: edit.z, id: edit.id } });
   }
 
+  /** Broadcast a dropped item {id,n,x,y,z,vx,vy,vz} so peers see it hit the ground. */
+  sendDrop(d) {
+    if (d && typeof d.id === 'string' && Number.isFinite(d.x)) this._broadcast({ t: 'd', d });
+  }
+
+  /** Broadcast "this drop was collected" so it doesn't linger on other screens. */
+  sendPickup(d) {
+    if (d && typeof d.id === 'string' && Number.isFinite(d.x)) this._broadcast({ t: 'k', d });
+  }
+
   /** Host only: push the full world {seed, edits} to one specific guest. */
   sendWorld(peerId, world) {
     if (!this._isHost || !world || typeof world !== 'object') return;
@@ -245,6 +257,9 @@ class VoxelNet {
       } else if (msg.t === 'b' && this._isEdit(msg.e)) {
         this._fire('onBlock', msg.e, conn.peer);
         this._relayFrom(conn.peer, msg);
+      } else if ((msg.t === 'd' || msg.t === 'k') && msg.d && typeof msg.d === 'object') {
+        this._fire(msg.t === 'd' ? 'onDrop' : 'onPickup', msg.d, conn.peer);
+        this._relayFrom(conn.peer, msg);
       }                                                  // anything else from a guest: ignore
     } catch (e) { /* malformed input — ignore */ }
   }
@@ -264,6 +279,8 @@ class VoxelNet {
       switch (msg.t) {
         case 's': if (Array.isArray(msg.ps)) this._fire('onState', hostId, msg.ps); break;
         case 'b': if (this._isEdit(msg.e)) this._fire('onBlock', msg.e, hostId); break;
+        case 'd': if (msg.d && typeof msg.d === 'object') this._fire('onDrop', msg.d, hostId); break;
+        case 'k': if (msg.d && typeof msg.d === 'object') this._fire('onPickup', msg.d, hostId); break;
         case 'w':
           if (msg.w && typeof msg.w === 'object' && msg.w.seed !== undefined &&
               Array.isArray(msg.w.edits)) this._fire('onWorld', msg.w);
@@ -272,6 +289,8 @@ class VoxelNet {
           if (typeof msg.f === 'string' && msg.m && typeof msg.m === 'object') {
             if (msg.m.t === 's' && Array.isArray(msg.m.ps)) this._fire('onState', msg.f, msg.m.ps);
             else if (msg.m.t === 'b' && this._isEdit(msg.m.e)) this._fire('onBlock', msg.m.e, msg.f);
+            else if (msg.m.t === 'd' && msg.m.d) this._fire('onDrop', msg.m.d, msg.f);
+            else if (msg.m.t === 'k' && msg.m.d) this._fire('onPickup', msg.m.d, msg.f);
           }
           break;
         case 'pj':                                // another guest joined the star

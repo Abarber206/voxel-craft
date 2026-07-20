@@ -875,6 +875,58 @@ class InventoryUI {
     }
     get inv() { return this.player ? this.player.inv : null; }
 
+    // ---- keyboard / gamepad slot cursor -------------------------------------
+    // Player 2 has no mouse, so without this they cannot craft, smelt or even move
+    // an item between slots. Navigation is geometric rather than index-based: it
+    // measures where slots actually are on screen, so it works across the inventory
+    // grid, the hotbar, the crafting square and the furnace without hardcoding any
+    // of their layouts.
+    visibleSlots() {
+        return [...this.o.panel.querySelectorAll('.slot')].filter(el => el.offsetParent !== null);
+    }
+    setFocus(el) {
+        if (this.focusEl) this.focusEl.classList.remove('kbfocus');
+        this.focusEl = el || null;
+        if (el) {
+            el.classList.add('kbfocus');
+            if (el.scrollIntoView) el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+        }
+    }
+    clearFocus() { this.setFocus(null); }
+    moveFocus(dx, dy) {
+        const slots = this.visibleSlots();
+        if (!slots.length) return;
+        if (!this.focusEl || !slots.includes(this.focusEl)) { this.setFocus(slots[0]); return; }
+        const r = this.focusEl.getBoundingClientRect();
+        const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+        let best = null, bestScore = Infinity;
+        for (const el of slots) {
+            if (el === this.focusEl) continue;
+            const q = el.getBoundingClientRect();
+            const ex = q.left + q.width / 2 - cx, ey = q.top + q.height / 2 - cy;
+            const along = ex * dx + ey * dy;              // distance in the pressed direction
+            if (along <= 2) continue;                     // wrong way
+            const off = Math.abs(ex * dy - ey * dx);      // drift perpendicular to it
+            const score = along + off * 3;                // strongly prefer staying in lane
+            if (score < bestScore) { bestScore = score; best = el; }
+        }
+        // nothing that way: wrap around to the far edge so you can never get stuck
+        if (!best) {
+            let far = null, farScore = -Infinity;
+            for (const el of slots) {
+                const q = el.getBoundingClientRect();
+                const s = -( (q.left + q.width / 2) * dx + (q.top + q.height / 2) * dy );
+                if (s > farScore) { farScore = s; far = el; }
+            }
+            best = far;
+        }
+        if (best) this.setFocus(best);
+    }
+    activateFocus(button, shift) {
+        if (!this.focusEl || !this.player) return;
+        this.handle(this.focusEl.dataset.s, +this.focusEl.dataset.i, button, !!shift);
+    }
+
     static slotHtml(s, i) {
         return '<div class="slot" data-s="' + s + '" data-i="' + i +
             '"><img draggable="false"><span class="cnt"></span><b class="durbar"><i></i></b></div>';
@@ -932,6 +984,7 @@ class InventoryUI {
         if (fb) fb.style.width = (f.burnMax > 0 ? Math.max(0, Math.min(1, f.burn / f.burnMax)) * 100 : 0) + '%';
     }
     close() {
+        this.clearFocus();
         if (!this.player) return;
         const inv = this.inv;
         for (let i = 0; i < 9; i++) if (inv.craft[i]) {   // grid contents go back to the bag

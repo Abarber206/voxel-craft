@@ -57,6 +57,10 @@
         .slot .durbar i { display: block; height: 100%; }
         #invPanel .slot:hover { background: #a8a8a8; }
         .slot.active { outline: 3px solid #fff; z-index: 1; }
+        /* keyboard/gamepad cursor: player 2 has no mouse, so the focused slot needs to
+           be obvious at a glance and distinct from the white "active hotbar" outline */
+        .slot.kbfocus { outline: 3px solid #ffd23f; z-index: 2;
+                        box-shadow: 0 0 0 2px rgba(0,0,0,0.55), 0 0 10px rgba(255,210,63,0.65); }
         .hotbar .slot { background: rgba(25,25,25,0.55); border-color: #1c1c1c #777 #777 #1c1c1c; }
         #invWrap { position: absolute; inset: 0; z-index: 45; display: flex; align-items: center;
             justify-content: center; background: rgba(0,0,0,0.5); }
@@ -170,9 +174,11 @@
     <div class="divider"></div>
     <div id="stats"></div>
     <div id="net">
-        <button id="hostBtn">Host</button>
-        <input id="joinCode" placeholder="code" maxlength="12">
+        <button id="hostBtn">Host game</button>
+        <input id="joinCode" placeholder="paste code or link" maxlength="120" autocomplete="off" spellcheck="false">
         <button id="joinBtn">Join</button>
+        <button id="copyBtn" style="display:none">Copy invite link</button>
+        <button id="leaveBtn" style="display:none">Leave</button>
         <div id="netStatus">offline (single machine)</div>
     </div>
 
@@ -220,7 +226,7 @@
                 </select></div>
                 <div class="setRow"><label>Render distance (chunks)</label><input id="setDist" type="range" min="2" max="12" step="1"><span id="setDistV"></span></div>
                 <div class="setRow"><label>Field of view</label><input id="setFov" type="range" min="60" max="90" step="1"><span id="setFovV"></span></div>
-                <div class="setRow"><label>Mouse sensitivity</label><input id="setSens" type="range" min="30" max="200" step="5"><span id="setSensV"></span></div>
+                <div class="setRow"><label>Mouse sensitivity</label><input id="setSens" type="range" min="5" max="200" step="5"><span id="setSensV"></span></div>
                 <div class="setRow"><label>View bobbing</label><input id="setBob" type="checkbox"></div>
                 <div class="setRow"><label>Sun shadows</label><input id="setShadow" type="checkbox"></div>
                 <div class="setRow"><label>Shadow distance (blocks)</label><input id="setShadowD" type="range" min="16" max="128" step="8"><span id="setShadowDV"></span></div>
@@ -269,6 +275,9 @@
 
         const GRAV = 27, JUMPV = 8.6, WALK = 4.6, EYE = 1.62, HW = 0.3, PH = 1.8;
         const SPRINT = 1.42;           // sprint speed multiplier (MC is ~1.3x walk)
+        // Apex = v^2 / 2g. At GRAV 27 this clears 1.30 blocks, so a 1-block step is
+        // comfortable rather than borderline. Players use JUMPV (1.37 blocks).
+        const MOB_JUMPV = 8.4;
         const LOOK_SPEED = 2.6, REACH = 6, STEP = 1 / 60;
         const DAY_LEN = 1200; // 20-minute cycle: 15 min day, 5 min night
 
@@ -1773,7 +1782,8 @@
                 if (f) {
                     for (const sl of ['fIn', 'fFuel', 'fOut']) {
                         const s2 = f.slots[sl][0];
-                        if (s2 && worldMode !== 'creative') p.inv.addItem(s2.id, s2.n);
+                        if (s2 && worldMode !== 'creative')
+                            spawnDrop(s2.id, s2.n, hit.x + 0.5, hit.y + 0.4, hit.z + 0.5);
                     }
                     furnaces.delete(fk);
                     if (openFurnaceKey === fk) invUI.close();
@@ -1783,7 +1793,11 @@
             let itemId = (prev in DROPS) ? DROPS[prev] : ItemDB.byBlock[prev];
             if (prev === 8) itemId = Math.random() < 0.05 ? 'apple' : (Math.random() < 0.7 ? 'leaves' : null);
             if (!canHarvest(p, prev)) itemId = null;       // wrong/no tool: block is lost
-            if (itemId && p.inv.addItem(itemId, 1) > 0) toast('P' + (p.idx + 1) + ' inventory full');
+            // Mined blocks pop out as a real entity you walk over, MC-style, instead of
+            // teleporting into the bag — that's also what makes a full inventory
+            // recoverable rather than silently destroying the block.
+            if (itemId) spawnDrop(itemId, 1, hit.x + 0.5, hit.y + 0.35, hit.z + 0.5,
+                                  (Math.random() - 0.5) * 1.6, 2.4, (Math.random() - 0.5) * 1.6);
             if (++p.mineN >= 20) { p.mineN = 0; depleteFood(p, 2); }   // mining works up an appetite
             // tool durability: every broken block wears the held tool; at 0 it shatters
             const st = p.inv.hotbar[p.activeSlot];
@@ -1894,40 +1908,50 @@
         // Blocks that are held as a flat sprite instead of a cube (MC does this for
         // torches and ground cover). Without this they fell through to the stone cube.
         const SPRITE_BLOCKS = new Set([23, 25, 26, 27]);
-        const handGroup = new THREE.Group();
-        handGroup.scale.setScalar(1);
-        handScene.add(handGroup);
-        // Arm rig, built FIST-FIRST: armGroup's origin IS the hand, and the limb runs
-        // down / right / toward the camera from there (forearm -> elbow -> upper arm).
-        // Anchoring at the fist is what fixes both the "arm points straight up" look
-        // and held items vanishing behind the arm mesh.
+        // One rig per local player, each on its own layer so the split-screen hand pass
+        // can draw player 1's arm in the left viewport and player 2's in the right.
+        // Previously the whole pass was skipped in split mode, so neither player had an
+        // arm or a visible held item.
         const armMat = new THREE.MeshLambertMaterial({ map: tileTexture('arm') });
-        const armGroup = new THREE.Group();
-        // 4px-wide Steve arm: ~0.12 world units (an 8px limb would be 0.25)
-        // Kept SHORT on purpose: at ~0.6 units from the hand camera anything longer
-        // than ~0.6 total spans the whole screen height (that was the giant beam).
-        const armFore = new THREE.Mesh(new THREE.BoxGeometry(0.10, 0.30, 0.10), armMat);  // hand -> elbow
-        armFore.geometry.translate(0, -0.15, 0);
-        const armUpper = new THREE.Mesh(new THREE.BoxGeometry(0.11, 0.30, 0.11), armMat); // elbow -> shoulder
-        armUpper.geometry.translate(0, -0.15, 0);
-        armUpper.position.y = -0.30;
-        armUpper.rotation.x = -0.55;                       // idle elbow bend
-        armFore.add(armUpper);
-        armGroup.add(armFore);
-        armGroup.rotation.set(-0.18, 0, 0.58);             // angles down-right, out of frame
-        const heldGroup = new THREE.Group();               // sits at the fist
-        handGroup.add(armGroup, heldGroup);
-
-        const hand = { swing: 1, equip: 1, bob: 0, swayX: 0, swayY: 0, prevYaw: 0, prevPitch: 0 };
-        let heldKey = null;
-        function triggerSwing() { hand.swing = 0; }
-        function rebuildHeld(item) {
+        const armForeGeo = new THREE.BoxGeometry(0.10, 0.30, 0.10);
+        const armUpperGeo = new THREE.BoxGeometry(0.11, 0.30, 0.11);
+        armForeGeo.translate(0, -0.15, 0);   // done ONCE, on geometry we own outright
+        armUpperGeo.translate(0, -0.15, 0);
+        function makeHandRig(idx) {
+            const group = new THREE.Group();
+            handScene.add(group);
+            // Arm rig, built FIST-FIRST: armGroup's origin IS the hand, and the limb runs
+            // down / right / toward the camera from there (forearm -> elbow -> upper arm).
+            // Anchoring at the fist is what fixes both the "arm points straight up" look
+            // and held items vanishing behind the arm mesh.
+            const armGroup = new THREE.Group();
+            // 4px-wide Steve arm: ~0.12 world units (an 8px limb would be 0.25)
+            // Kept SHORT on purpose: at ~0.6 units from the hand camera anything longer
+            // than ~0.6 total spans the whole screen height (that was the giant beam).
+            const armFore = new THREE.Mesh(armForeGeo, armMat);    // hand -> elbow
+            const armUpper = new THREE.Mesh(armUpperGeo, armMat);  // elbow -> shoulder
+            armUpper.position.y = -0.30;
+            armUpper.rotation.x = -0.55;                   // idle elbow bend
+            armFore.add(armUpper);
+            armGroup.add(armFore);
+            armGroup.rotation.set(-0.18, 0, 0.58);         // angles down-right, out of frame
+            const heldGroup = new THREE.Group();           // sits at the fist
+            group.add(armGroup, heldGroup);
+            const layer = idx + 1;
+            group.traverse(o => o.layers.set(layer));
+            return { group, armGroup, armUpper, heldGroup, layer, heldKey: null,
+                     swing: 1, equip: 1, bob: 0, swayX: 0, swayY: 0, prevYaw: 0, prevPitch: 0 };
+        }
+        const handRigs = [makeHandRig(0), makeHandRig(1)];
+        function triggerSwing(idx = 0) { handRigs[idx].swing = 0; }
+        function rebuildHeld(rig, item) {
+            const heldGroup = rig.heldGroup;
             for (const c of [...heldGroup.children]) {
                 heldGroup.remove(c);
                 if (c.geometry) c.geometry.dispose();
                 for (const m of Array.isArray(c.material) ? c.material : [c.material]) m.dispose();
             }
-            armGroup.visible = true;                       // the arm always shows, MC-style
+            rig.armGroup.visible = true;                   // the arm always shows, MC-style
             if (!item) return;
             const asCube = item.type === 'Block' && !SPRITE_BLOCKS.has(item.blockId);
             if (asCube) {                                  // MC: held block = 45deg-yawed mini cube
@@ -1944,27 +1968,38 @@
                     new THREE.MeshLambertMaterial({ map: tileTexture(item.icon), transparent: true,
                                                     alphaTest: 0.5, side: THREE.DoubleSide }));
                 m.position.set(-0.03, 0.09, 0.03);         // sits right at the fist
-                m.rotation.set(0, -0.3, -0.45);            // aligned along the forearm
+                // Tool and weapon art is ALREADY drawn on a 45-degree diagonal. Rolling
+                // it clockwise like the other sprites flattened blades toward horizontal,
+                // which is why swords looked like they were being carried sideways.
+                // Roll those the other way so the blade points up-right; keep the lean
+                // for torches, food and plants, whose art is drawn upright.
+                const diagonal = item.type === 'Tool' || item.type === 'Weapon' || !!item.tool;
+                m.rotation.set(0, -0.3, diagonal ? 0.22 : -0.4);
                 heldGroup.add(m);
             }
+            for (const o of heldGroup.children) o.traverse(c => c.layers.set(rig.layer));
         }
         function updateHand(dt, p) {
-            const active = !splitMode && gameState === 'playing' && p.spawned;
+            const hand = handRigs[p.idx], handGroup = hand.group, armUpper = hand.armUpper;
+            const active = gameState === 'playing' && p.spawned && (p.idx === 0 || splitMode);
             handGroup.visible = active;
             if (!active) return;
             // The arm renders in its own pass with its own lights, so it has to be dimmed
             // by hand to match the voxel light where the player is actually standing —
             // otherwise the hand stays sunlit while you walk into a pitch-black cave.
+            // Both viewports share one light rig, so player 1's surroundings win.
             const bx = Math.floor(p.pos.x), by = Math.floor(p.pos.y + EYE), bz = Math.floor(p.pos.z);
             const localLit = Math.max(getSky(bx, by, bz) / 15 * lightUniforms.uSkyBright.value,
                                       getBlk(bx, by, bz) / 15 * 0.92, 0.07);
-            handHemi.intensity = 0.2 + 0.9 * localLit;
-            handDir.intensity = 0.75 * localLit;
+            if (p.idx === 0) {
+                handHemi.intensity = 0.2 + 0.9 * localLit;
+                handDir.intensity = 0.75 * localLit;
+            }
 
             const st = p.inv.hotbar[p.activeSlot];
             const item = st ? ItemDB.get(st.id) : null;
             const key = item ? item.id : 'hand';
-            if (key !== heldKey) { heldKey = key; rebuildHeld(item); hand.equip = 0; } // re-equip dip
+            if (key !== hand.heldKey) { hand.heldKey = key; rebuildHeld(hand, item); hand.equip = 0; }
             if (hand.swing < 1) hand.swing = Math.min(1, hand.swing + dt / 0.26);
             if (hand.equip < 1) hand.equip = Math.min(1, hand.equip + dt / 0.3);
             // Minecraft's swing: sqrt-eased arc out, sine arc back
@@ -1980,8 +2015,8 @@
             hand.bob += speed * dt * 1.7;
             const bobX = Math.sin(hand.bob) * 0.033 * sf;
             const bobY = -Math.abs(Math.cos(hand.bob)) * 0.04 * sf;
-            camera1.position.y -= Math.abs(Math.cos(hand.bob)) * 0.048 * sf;
-            camera1.rotation.z += Math.sin(hand.bob) * 0.006 * sf;
+            p.cam.position.y -= Math.abs(Math.cos(hand.bob)) * 0.048 * sf;
+            p.cam.rotation.z += Math.sin(hand.bob) * 0.006 * sf;
             // look sway: the hand lags quick turns, then settles
             const dy = p.yaw - hand.prevYaw, dpt = p.pitch - hand.prevPitch;
             hand.prevYaw = p.yaw; hand.prevPitch = p.pitch;
@@ -2000,6 +2035,132 @@
                 handGroup.rotation.set(0.5, 0.9, 0.15);
             }
         }
+
+        // ============================ DROPPED ITEMS ============================
+        // Free-standing item entities: they fall, settle, bob and spin, get vacuumed
+        // toward a nearby player, and merge with identical stacks so a big dig doesn't
+        // carpet the floor with hundreds of separate entities. Blocks you mine drop
+        // here rather than teleporting into the bag, and Q throws things back out.
+        const drops = [];
+        const DROP_LIFE = 300;         // seconds before it gives up and vanishes
+        const DROP_PICKUP_R = 1.6;     // vacuum radius
+        const DROP_MERGE_R = 0.75;
+        const dropGeoCube = new THREE.BoxGeometry(0.26, 0.26, 0.26);
+        const dropGeoFlat = new THREE.PlaneGeometry(0.34, 0.34);
+        function makeDropMesh(item) {
+            const asCube = item.type === 'Block' && !SPRITE_BLOCKS.has(item.blockId);
+            if (asCube) {
+                const t = HAND_TILES[item.blockId] || HAND_TILES[3];
+                const mats = [t[1], t[1], t[0], t[2], t[1], t[1]]
+                    .map(n => new THREE.MeshLambertMaterial({ map: tileTexture(n), alphaTest: 0.5 }));
+                return new THREE.Mesh(dropGeoCube, mats);
+            }
+            return new THREE.Mesh(dropGeoFlat, new THREE.MeshLambertMaterial({
+                map: tileTexture(item.icon), transparent: true, alphaTest: 0.5, side: THREE.DoubleSide }));
+        }
+        function spawnDrop(id, n, x, y, z, vx = 0, vy = 0, vz = 0, fromNet) {
+            const item = ItemDB.get(id);
+            if (!item || n <= 0) return null;
+            // merge into an existing pile first — cheaper and tidier than another entity
+            for (const d of drops) {
+                if (d.id !== id || d.n + n > item.stack) continue;
+                if (Math.abs(d.pos.x - x) > DROP_MERGE_R || Math.abs(d.pos.y - y) > DROP_MERGE_R ||
+                    Math.abs(d.pos.z - z) > DROP_MERGE_R) continue;
+                d.n += n; d.life = DROP_LIFE;
+                return d;
+            }
+            const mesh = makeDropMesh(item);
+            mesh.castShadow = true;
+            mesh.position.set(x, y, z);
+            scene.add(mesh);
+            const d = { id, n, mesh, pos: new THREE.Vector3(x, y, z),
+                        vel: new THREE.Vector3(vx, vy, vz), life: DROP_LIFE, spin: Math.random() * 6.28,
+                        settle: 0, arm: fromNet ? 0.35 : 0.55 };  // arm: no instant re-pickup
+            drops.push(d);
+            if (!fromNet && net && net.peerCount) net.sendDrop &&
+                net.sendDrop({ id, n, x, y, z, vx, vy, vz });
+            return d;
+        }
+        function removeDrop(i) {
+            const d = drops[i];
+            scene.remove(d.mesh);
+            for (const m of Array.isArray(d.mesh.material) ? d.mesh.material : [d.mesh.material]) m.dispose();
+            drops.splice(i, 1);
+        }
+        // Throw the held item out in front of the player.
+        function dropHeld(p, whole) {
+            const st = p.inv.hotbar[p.activeSlot];
+            if (!st) return;
+            const n = whole ? st.n : 1;
+            const id = st.id;
+            st.n -= n;
+            if (st.n <= 0) p.inv.hotbar[p.activeSlot] = null;
+            p.inv.onChange();
+            const fx = -Math.sin(p.yaw) * Math.cos(p.pitch), fz = -Math.cos(p.yaw) * Math.cos(p.pitch);
+            spawnDrop(id, n, p.pos.x + fx * 0.5, p.pos.y + EYE - 0.3, p.pos.z + fz * 0.5,
+                      fx * 5.2, Math.sin(-p.pitch) * 4 + 2.6, fz * 5.2);
+            triggerSwing(p.idx);
+        }
+        function updateDrops(dt) {
+            const nLocal = splitMode ? 2 : 1;
+            for (let i = drops.length - 1; i >= 0; i--) {
+                const d = drops[i];
+                d.life -= dt;
+                if (d.life <= 0) { removeDrop(i); continue; }
+                if (d.arm > 0) d.arm -= dt;
+                // magnet: once a player is close the item accelerates toward their chest
+                let grabbed = false;
+                if (d.arm <= 0) {
+                    for (let pi = 0; pi < nLocal; pi++) {
+                        const p = players[pi];
+                        if (!p.spawned) continue;
+                        const dx = p.pos.x - d.pos.x, dy = (p.pos.y + 0.9) - d.pos.y, dz = p.pos.z - d.pos.z;
+                        const dist = Math.hypot(dx, dy, dz);
+                        if (dist > DROP_PICKUP_R) continue;
+                        if (dist < 0.55) {                       // close enough to collect
+                            const left = p.inv.addItem(d.id, d.n);
+                            if (left === d.n) break;             // inventory full: leave it lying
+                            d.n = left;
+                            if (left <= 0) {
+                                if (net && net.peerCount && net.sendPickup) net.sendPickup({ id: d.id, x: d.pos.x, y: d.pos.y, z: d.pos.z });
+                                removeDrop(i); grabbed = true;
+                            }
+                            break;
+                        }
+                        const pull = (1 - dist / DROP_PICKUP_R) * 26 * dt;
+                        d.vel.x += dx / dist * pull; d.vel.y += dy / dist * pull; d.vel.z += dz / dist * pull;
+                    }
+                }
+                if (grabbed) continue;
+                d.vel.y -= GRAV * 0.55 * dt;                     // items fall lazily
+                const step = (axis, amt) => {                    // simple swept AABB, 0.13 half-extent
+                    if (!amt) return;
+                    d.pos[axis] += amt;
+                    const r = 0.13;
+                    const bx = Math.floor(d.pos.x), by = Math.floor(d.pos.y), bz = Math.floor(d.pos.z);
+                    for (let y2 = Math.floor(d.pos.y - r); y2 <= Math.floor(d.pos.y + r); y2++)
+                        for (let z2 = Math.floor(d.pos.z - r); z2 <= Math.floor(d.pos.z + r); z2++)
+                            for (let x2 = Math.floor(d.pos.x - r); x2 <= Math.floor(d.pos.x + r); x2++) {
+                                if (!solidAt(x2, y2, z2)) continue;
+                                if (axis === 'y') {
+                                    d.pos.y = amt > 0 ? y2 - r - 0.001 : y2 + 1 + r + 0.001;
+                                    if (amt < 0) d.settle = 1;
+                                    d.vel.y = 0;
+                                } else {
+                                    d.pos[axis] -= amt; d.vel[axis] = 0;
+                                }
+                                return;
+                            }
+                };
+                step('x', d.vel.x * dt); step('z', d.vel.z * dt); step('y', d.vel.y * dt);
+                const fr = d.settle ? Math.max(0, 1 - 9 * dt) : Math.max(0, 1 - 1.2 * dt);
+                d.vel.x *= fr; d.vel.z *= fr;
+                d.spin += dt * 1.6;
+                d.mesh.position.set(d.pos.x, d.pos.y + 0.10 + Math.sin(d.spin * 1.4) * 0.045, d.pos.z);
+                d.mesh.rotation.y = d.spin;
+            }
+        }
+        function clearDrops() { for (let i = drops.length - 1; i >= 0; i--) removeDrop(i); }
 
         // Mining crack overlay per player: 4 stages + a shake that grows as the block
         // gives way (layer-masked so each split view only sees its own).
@@ -2053,6 +2214,26 @@
                 if (lx !== 0) inp.lookX = lx * Math.abs(lx);
                 if (ly !== 0) inp.lookY = ly * Math.abs(ly);
                 const btn = n => gp.buttons[n] && (gp.buttons[n].value > 0.5 || gp.buttons[n].pressed);
+                // With the inventory open the pad drives the slot cursor instead of the
+                // player, so a pad-only player 2 can craft. Edge-triggered: hold does
+                // not repeat, otherwise a single nudge flies across the grid.
+                if (invOpenFor === target) {
+                    const pv = padPrev[k2];
+                    const nav = [[dz(gp.axes[0]) < -0.5 || btn(14), -1, 0], [dz(gp.axes[0]) > 0.5 || btn(15), 1, 0],
+                                 [dz(gp.axes[1]) < -0.5 || btn(12), 0, -1], [dz(gp.axes[1]) > 0.5 || btn(13), 0, 1]];
+                    pv.nav = pv.nav || [false, false, false, false];
+                    nav.forEach(([on, ddx, ddy], ni) => {
+                        if (on && !pv.nav[ni]) invUI.moveFocus(ddx, ddy);
+                        pv.nav[ni] = on;
+                    });
+                    const a = btn(0), b = btn(1), x = btn(2);
+                    if (a && !pv.a) invUI.activateFocus(0, false);
+                    if (b && !pv.b) invUI.activateFocus(2, false);
+                    if (x && !pv.x) invUI.activateFocus(0, true);   // X = shift-click
+                    pv.a = a; pv.b = b; pv.x = x;
+                    inp.moveX = inp.moveZ = 0;
+                    continue;                                        // pad does not also walk
+                }
                 inp.jump = inp.jump || btn(0);
                 inp.down = inp.down || btn(1);  // B / Circle: descend while flying
                 inp.sprint = inp.sprint || btn(10) || gp.axes[1] < -0.92; // L3, or stick hard forward
@@ -2108,6 +2289,24 @@
             if (gameState !== 'playing') return;
             if (e.code === prefs.binds.p1.inventory) toggleInventory(0);
             if (e.code === prefs.binds.p2.inventory) toggleInventory(1);
+            // Mouse-free inventory: whoever has it open drives a slot cursor with their
+            // own movement keys. This is the only way player 2 can craft at all.
+            if (invOpenFor !== null) {
+                const B = prefs.binds[invOpenFor === 0 ? 'p1' : 'p2'];
+                let used = true;
+                if (e.code === B.left) invUI.moveFocus(-1, 0);
+                else if (e.code === B.right) invUI.moveFocus(1, 0);
+                else if (e.code === B.forward) invUI.moveFocus(0, -1);
+                else if (e.code === B.back) invUI.moveFocus(0, 1);
+                else if (e.code === B.place || e.code === 'Enter') invUI.activateFocus(0, e.shiftKey);
+                else if (e.code === B.dig || e.code === B.drop) invUI.activateFocus(2, e.shiftKey);
+                else used = false;
+                if (used) { e.preventDefault(); return; }
+            }
+            if (invOpenFor === null && !e.repeat) {   // Q throws the held item, shift+Q the stack
+                if (e.code === prefs.binds.p1.drop && players[0].spawned) dropHeld(players[0], e.shiftKey);
+                if (e.code === prefs.binds.p2.drop && splitMode && players[1].spawned) dropHeld(players[1], e.shiftKey);
+            }
             if (invOpenFor === null) {
                 if (e.code.startsWith('Digit')) {    // 1-9 select P1's active hotbar slot
                     const d = +e.code.slice(5);
@@ -2123,13 +2322,30 @@
         // P1 mouse look via pointer lock
         renderer.domElement.addEventListener('click', () => {
             if (gameState !== 'playing' || invOpenFor !== null) return;
-            if (!document.pointerLockElement) renderer.domElement.requestPointerLock();
+            if (document.pointerLockElement) return;
+            // unadjustedMovement strips the OS mouse-acceleration curve. Without it the
+            // browser hands us pre-accelerated deltas, so a quick flick is amplified far
+            // beyond whatever the sensitivity slider says — which is why turning felt
+            // wild at every setting. Not all browsers support it, hence the fallback.
+            const el = renderer.domElement;
+            const req = el.requestPointerLock({ unadjustedMovement: true });
+            if (req && req.catch) req.catch(() => el.requestPointerLock());
         });
+        // Deltas arrive in physical device pixels, so the same hand movement produces
+        // far bigger numbers on a HiDPI screen. Normalising keeps one setting feeling
+        // identical across a laptop retina panel and an external 1080p monitor.
+        const LOOK_SCALE = 0.0016;
         window.addEventListener('mousemove', e => {
             if (document.pointerLockElement !== renderer.domElement) return;
+            const dpr = Math.min(2.5, Math.max(1, window.devicePixelRatio || 1));
+            const k = LOOK_SCALE * prefs.sens / dpr;
+            // A single event should never spin the view more than ~1/4 turn: pointer
+            // lock occasionally emits a huge delta when the OS warps the cursor.
+            const mx = Math.max(-600, Math.min(600, e.movementX || 0));
+            const my = Math.max(-600, Math.min(600, e.movementY || 0));
             const p = players[0];
-            p.yaw -= e.movementX * 0.0022 * prefs.sens;
-            p.pitch = Math.max(-1.53, Math.min(1.53, p.pitch - e.movementY * 0.0022 * prefs.sens));
+            p.yaw -= mx * k;
+            p.pitch = Math.max(-1.53, Math.min(1.53, p.pitch - my * k));
         });
         window.addEventListener('mousedown', e => {
             if (document.pointerLockElement !== renderer.domElement) return;
@@ -2162,7 +2378,7 @@
         function handleActions(p, inp, now, dt) {
             // attack swing: a fresh press first tries to hit a mob in reach
             if (inp.brk && !p.prevBrk) {
-                if (p.idx === 0) triggerSwing();
+                triggerSwing(p.idx);
                 if (tryAttackMob(p)) { p.prevBrk = inp.brk; p.mineKey = null; p.mineT = 0; return; }
             }
             p.prevBrk = inp.brk;
@@ -2170,7 +2386,7 @@
                 const k2 = p.target.x + ',' + p.target.y + ',' + p.target.z;
                 if (p.mineKey !== k2) { p.mineKey = k2; p.mineT = 0; p.mineDur = breakTimeFor(p, p.target.id); }
                 p.mineT += dt * 1000;
-                if (now - (p.lastSwing || 0) > 260) { p.lastSwing = now; if (p.idx === 0) triggerSwing(); }
+                if (now - (p.lastSwing || 0) > 260) { p.lastSwing = now; triggerSwing(p.idx); }
                 if (p.mineT >= p.mineDur) { doBreak(p); p.mineKey = null; p.mineT = 0; }
             } else { p.mineKey = null; p.mineT = 0; }
             if (inp.place) {
@@ -2181,7 +2397,7 @@
                     else if (p.eating.t >= 1.5) { finishEating(p, st); p.eating = null; }
                 } else if (now - p.lastPlace > 230) {
                     p.lastPlace = now;
-                    if (p.idx === 0) triggerSwing();
+                    triggerSwing(p.idx);
                     doPlace(p);
                 }
             } else { p.lastPlace = 0; p.eating = null; }                            // released: eating cancelled
@@ -2313,7 +2529,8 @@
             if (byPlayer && worldMode === 'survival') {
                 const [lo, hi] = m.def.dropN;
                 const n = lo + Math.floor(Math.random() * (hi - lo + 1));
-                if (n > 0) byPlayer.inv.addItem(m.def.drop, n);
+                if (n > 0) spawnDrop(m.def.drop, n, m.pos.x, m.pos.y + 0.4, m.pos.z,
+                                     (Math.random() - 0.5) * 1.4, 2.2, (Math.random() - 0.5) * 1.4);
             }
             removeMob(i);
         }
@@ -2386,7 +2603,10 @@
                 const wasGround = m.onGround;
                 m.onGround = false;
                 mobMove(m, 'y', m.vel.y * dt);
-                if (m.blocked && m.onGround && want > 0) m.vel.y = 7.4;  // auto-jump 1-block steps
+                // Auto-jump a step. MOB_JUMPV must clear a FULL block with margin: at
+                // 7.4 the apex was 1.014 blocks, so a 1-block step only worked if the
+                // timestep happened to land right and mobs got stuck on flat ledges.
+                if (m.blocked && m.onGround && want > 0) m.vel.y = MOB_JUMPV;
                 if (m.pos.y < -8) { removeMob(i); continue; }
                 // zombies burn in daylight (skylight check: nothing solid overhead)
                 if (d.hostile && sunUp()) {
@@ -2629,6 +2849,14 @@
                 }
             };
             net.onBlock = e => setBlock(e.x, e.y, e.z, e.id, true);
+            net.onDrop = d => spawnDrop(d.id, d.n | 0, +d.x, +d.y, +d.z, +d.vx || 0, +d.vy || 0, +d.vz || 0, true);
+            net.onPickup = d => {   // someone else got there first: take it off our screen
+                for (let i = drops.length - 1; i >= 0; i--) {
+                    const q = drops[i];
+                    if (q.id !== d.id) continue;
+                    if (Math.hypot(q.pos.x - d.x, q.pos.y - d.y, q.pos.z - d.z) < 2.5) { removeDrop(i); break; }
+                }
+            };
             net.onWorld = w => {
                 if (w.mode) { worldMode = w.mode; updateModeButtons(); updateHearts(); } // host's rules
                 if (w.seed !== SEED) { resetWorld(w.seed, w.edits); return; }
@@ -2654,25 +2882,113 @@
             };
         }
 
-        document.getElementById('hostBtn').onclick = async () => {
-            if (!net || typeof Peer === 'undefined') { statusEl.textContent = 'networking unavailable (offline or net-module.js missing)'; return; }
+        // ---- joining, made hard to get wrong ------------------------------------
+        // Typing a 5-character code correctly over voice chat is the worst part of a
+        // peer-to-peer game, so: the field accepts a bare code OR a whole pasted invite
+        // link, case and spaces don't matter, hosting produces a one-click copyable
+        // link, and opening that link auto-joins with no typing at all.
+        const joinInput = document.getElementById('joinCode');
+        const hostBtn = document.getElementById('hostBtn');
+        const joinBtn = document.getElementById('joinBtn');
+        const copyBtn = document.getElementById('copyBtn');
+        const leaveBtn = document.getElementById('leaveBtn');
+        const netAvailable = () => {
+            if (net && typeof Peer !== 'undefined') return true;
+            statusEl.textContent = location.protocol === 'file:'
+                ? 'multiplayer needs http(s) — open the hosted page, not the file'
+                : 'networking unavailable (offline, or net-module.js missing)';
+            return false;
+        };
+        // accepts "abc12", "VOXEL-ABC12", or "https://…/?join=abc12"
+        function parseCode(raw) {
+            const s = String(raw || '').trim();
+            if (!s) return '';
+            const m = /[?&#]join=([A-Za-z0-9-]+)/.exec(s);
+            const c = (m ? m[1] : s.split(/[?&#/\s]/).pop() || s);
+            return c.toLowerCase().replace(/^voxel-/, '').replace(/[^a-z0-9]/g, '');
+        }
+        function inviteLink(code) {
+            const u = new URL(location.href);
+            u.hash = '';
+            u.searchParams.set('join', code);
+            return u.toString();
+        }
+        function setNetUI(mode) {          // 'idle' | 'hosting' | 'joined'
+            copyBtn.style.display = mode === 'hosting' ? '' : 'none';
+            leaveBtn.style.display = mode === 'idle' ? 'none' : '';
+            hostBtn.style.display = mode === 'idle' ? '' : 'none';
+            joinBtn.style.display = mode === 'idle' ? '' : 'none';
+            joinInput.style.display = mode === 'idle' ? '' : 'none';
+        }
+        hostBtn.onclick = async () => {
+            if (!netAvailable()) return;
+            hostBtn.disabled = true;
+            statusEl.textContent = 'starting…';
             try {
                 sessionCode = null;
                 sessionCode = await net.host();
-                statusEl.textContent = 'code: ' + sessionCode + ' · share it!';
+                setNetUI('hosting');
+                statusEl.textContent = 'code ' + sessionCode.toUpperCase() + ' · waiting for players';
             } catch (e) { /* onStatus already reported */ }
+            hostBtn.disabled = false;
         };
-        const joinInput = document.getElementById('joinCode');
-        document.getElementById('joinBtn').onclick = async () => {
-            if (!net || typeof Peer === 'undefined') { statusEl.textContent = 'networking unavailable (offline or net-module.js missing)'; return; }
+        copyBtn.onclick = async () => {
+            if (!sessionCode) return;
+            const link = inviteLink(sessionCode);
+            try {
+                await navigator.clipboard.writeText(link);
+                toast('Invite link copied — send it to a friend');
+            } catch (e) {                   // clipboard blocked: show it so they can copy by hand
+                joinInput.style.display = '';
+                joinInput.value = link;
+                joinInput.select();
+                toast('Copy this link');
+            }
+        };
+        leaveBtn.onclick = () => {
+            if (net) net.close();
+            sessionCode = null;
+            for (const pid of [...remotes.keys()]) removeRemote(pid);
+            setNetUI('idle');
+            statusEl.textContent = 'offline (single machine)';
+        };
+        async function doJoin(raw) {
+            if (!netAvailable()) return false;
+            const code = parseCode(raw);
+            if (code.length < 3) { statusEl.textContent = 'that doesn\'t look like a code'; return false; }
+            joinBtn.disabled = true;
+            statusEl.textContent = 'connecting to ' + code.toUpperCase() + '…';
             try {
                 sessionCode = null;
-                await net.join(joinInput.value);
-                sessionCode = joinInput.value.trim().toLowerCase().replace(/^voxel-/, '');
+                await net.join(code);
+                sessionCode = code;
                 joinInput.blur();
-            } catch (e) { /* onStatus already reported */ }
-        };
-        joinInput.addEventListener('keydown', e => { if (e.key === 'Enter') document.getElementById('joinBtn').onclick(); });
+                setNetUI('joined');
+                toast('Joined ' + code.toUpperCase());
+                joinBtn.disabled = false;
+                return true;
+            } catch (e) {                   // onStatus already said why
+                joinBtn.disabled = false;
+                return false;
+            }
+        }
+        joinBtn.onclick = () => doJoin(joinInput.value);
+        joinInput.addEventListener('keydown', e => { if (e.key === 'Enter') doJoin(joinInput.value); });
+        joinInput.addEventListener('paste', () => setTimeout(() => {
+            const c = parseCode(joinInput.value);
+            if (c && c !== joinInput.value) joinInput.value = c;   // strip a pasted URL down to the code
+        }, 0));
+
+        // ?join=CODE in the address bar: start the world and connect automatically.
+        const urlJoin = parseCode(new URLSearchParams(location.search).get('join') || '');
+        if (urlJoin) {
+            statusEl.textContent = 'invite detected · code ' + urlJoin.toUpperCase();
+            joinInput.value = urlJoin;
+            window.addEventListener('load', () => setTimeout(async () => {
+                if (!worldActive) startFromTitle();       // an invite implies "just play"
+                await doJoin(urlJoin);
+            }, 400));
+        }
 
         let lastNetSend = 0;
         const r2 = v => Math.round(v * 100) / 100;
@@ -2707,11 +3023,12 @@
         // ---- user preferences: video, mouse, controller assignment, custom keybinds ----
         const DEFAULT_BINDS = {
             p1: { forward: 'KeyW', back: 'KeyS', left: 'KeyA', right: 'KeyD', jump: 'Space',
-                  down: 'ShiftLeft', sprint: 'ControlLeft', dig: 'Mouse0', place: 'Mouse2', inventory: 'KeyE' },
+                  down: 'ShiftLeft', sprint: 'ControlLeft', drop: 'KeyQ',
+                  dig: 'Mouse0', place: 'Mouse2', inventory: 'KeyE' },
             p2: { forward: 'ArrowUp', back: 'ArrowDown', left: 'ArrowLeft', right: 'ArrowRight',
                   lookUp: 'KeyI', lookDown: 'KeyK', lookLeft: 'KeyJ', lookRight: 'KeyL',
-                  jump: 'KeyN', down: 'ShiftRight', sprint: 'Slash', dig: 'KeyU', place: 'KeyO',
-                  inventory: 'KeyM', hotbar: 'KeyP' }
+                  jump: 'KeyN', down: 'ShiftRight', sprint: 'Slash', drop: 'Period',
+                  dig: 'KeyU', place: 'KeyO', inventory: 'KeyM', hotbar: 'KeyP' }
         };
         // Graphics presets. Picking one stamps its values into prefs; touching any of
         // the individual controls afterwards flips the preset to "custom" rather than
@@ -2768,10 +3085,10 @@
         // ---- custom keybinds: click a binding, press any key or mouse button ----
         const BIND_ACTIONS = {
             p1: [['forward', 'Forward'], ['back', 'Back'], ['left', 'Left'], ['right', 'Right'],
-                 ['jump', 'Jump'], ['sprint', 'Sprint'], ['down', 'Descend (fly)'], ['dig', 'Dig / Attack'], ['place', 'Place / Use'], ['inventory', 'Inventory']],
+                 ['jump', 'Jump'], ['sprint', 'Sprint'], ['down', 'Descend (fly)'], ['dig', 'Dig / Attack'], ['place', 'Place / Use'], ['drop', 'Drop Item'], ['inventory', 'Inventory']],
             p2: [['forward', 'Forward'], ['back', 'Back'], ['left', 'Left'], ['right', 'Right'],
                  ['lookUp', 'Look Up'], ['lookDown', 'Look Down'], ['lookLeft', 'Look Left'], ['lookRight', 'Look Right'],
-                 ['jump', 'Jump'], ['sprint', 'Sprint'], ['down', 'Descend (fly)'], ['dig', 'Dig'], ['place', 'Place / Use'], ['inventory', 'Inventory'], ['hotbar', 'Hotbar Cycle']]
+                 ['jump', 'Jump'], ['sprint', 'Sprint'], ['down', 'Descend (fly)'], ['dig', 'Dig'], ['place', 'Place / Use'], ['drop', 'Drop Item'], ['inventory', 'Inventory'], ['hotbar', 'Hotbar Cycle']]
         };
         let bindCapture = null;
         function keyLabel(code) {
@@ -2887,6 +3204,7 @@
             dockInvWrap(i);
             if (document.pointerLockElement) { expectUnlock = true; document.exitPointerLock(); }
             invUI.open(players[i], 'Player ' + (i + 1) + ' — Inventory', 'player', worldMode === 'creative');
+            if (i > 0) invUI.moveFocus(1, 0);   // P2 has no pointer: start the cursor for them
         }
         function openCraftTable(p) {                       // right-clicked a crafting table block
             if (p.idx > 0 && !splitMode) return;
@@ -2895,6 +3213,7 @@
             dockInvWrap(p.idx);
             if (document.pointerLockElement) { expectUnlock = true; document.exitPointerLock(); }
             invUI.open(p, 'Crafting Table', 'table', worldMode === 'creative');
+            if (p.idx > 0) invUI.moveFocus(1, 0);
         }
         document.addEventListener('pointerlockchange', () => {
             if (document.pointerLockElement === renderer.domElement) return;
@@ -2972,6 +3291,7 @@
             }
             loadFurnaces(data ? data.furnaces : null);
             clearMobs();                     // mobs are transient: respawn naturally
+            clearDrops();
             players.forEach((p, i) => {
                 // NEW world (no save data) => everything resets: inventory, health,
                 // hunger, hotbar. Nothing carries over from the previous world.
@@ -3012,7 +3332,7 @@
             for (const [, ch] of chunks) if (ch.mesh) { scene.remove(ch.mesh); ch.mesh.geometry.dispose(); }
             chunks.clear(); pendingGen.clear(); jobQueue.length = 0;
             furnaces.clear(); openFurnaceKey = null;
-            clearMobs();
+            clearMobs(); clearDrops();
             players.forEach(p => { p.spawned = false; p.avatar.visible = false; p.eating = null; p.mineKey = null; });
             highlights.forEach(h => h.visible = false);
             cracks.forEach(c => c.visible = false);
@@ -3228,11 +3548,13 @@
                 tickFurnaces(dt);
                 updateMobs(dt);
                 trySpawnMobs(dt);
+                updateDrops(dt);
             }
             netTick(now);
             interpRemotes(dt);
 
-            updateHand(dt, players[0]);       // first-person arm (single-view mode)
+            updateHand(dt, players[0]);       // first-person arm, one rig per local player
+            updateHand(dt, players[1]);
 
             renderer.info.reset();
             // Sun shadows: re-centre the box on the view we're rendering, then let the
@@ -3249,17 +3571,23 @@
             const w = window.innerWidth, hgt = window.innerHeight;
             if (splitMode) {                  // scissored split-screen, per the starter
                 renderer.setScissorTest(true);
-                renderer.setViewport(0, 0, w / 2, hgt);
-                renderer.setScissor(0, 0, w / 2, hgt);
-                renderer.render(scene, camera1);
-                renderer.setViewport(w / 2, 0, w / 2, hgt);
-                renderer.setScissor(w / 2, 0, w / 2, hgt);
-                renderer.render(scene, camera2);
+                // Each half gets its world pass, then a depth-cleared hand pass masked
+                // to that player's rig layer, so both players see their own arm.
+                for (let i = 0; i < 2; i++) {
+                    const x = i === 0 ? 0 : w / 2;
+                    renderer.setViewport(x, 0, w / 2, hgt);
+                    renderer.setScissor(x, 0, w / 2, hgt);
+                    renderer.render(scene, i === 0 ? camera1 : camera2);
+                    renderer.clearDepth();
+                    handCamera.layers.set(i + 1);
+                    renderer.render(handScene, handCamera);
+                }
                 renderer.setScissorTest(false);
             } else {                          // fullscreen + depth-cleared hand overlay
                 renderer.setViewport(0, 0, w, hgt);
                 renderer.render(scene, camera1);
                 renderer.clearDepth();        // the arm never clips into world geometry
+                handCamera.layers.set(1);
                 renderer.render(handScene, handCamera);
             }
             lastCalls = renderer.info.render.calls;

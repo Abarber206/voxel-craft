@@ -24,9 +24,11 @@ cycle, split-screen co-op, and online multiplayer over WebRTC.
 Networking is peer-to-peer over WebRTC using the public PeerJS broker, so there is nothing
 to host or configure. One player hosts and shares a 5-character code.
 
-**To host:** click **Host** (top right). A code appears — send it to your friends.
+**To host:** click **Host game** (top right), then **Copy invite link** and send it to a
+friend. Opening that link joins your game automatically — no typing, no code to read out.
 
-**To join:** type the code into the box and click **Join**.
+**To join:** paste the invite link (or just the code) into the box and click **Join**.
+Case and stray spaces don't matter, and a full URL is accepted as-is.
 
 The host's world seed and every block edit are synced to guests automatically. Guests talk
 only to the host, which relays between them (star topology), so the host's connection carries
@@ -39,11 +41,15 @@ the traffic.
 ## Controls
 
 **Player 1** — `W` `A` `S` `D` move, `Ctrl` sprint, `Space` jump, `Shift` descend (creative),
-mouse to look, **left click** mine, **right click** place, `E` inventory, `1`–`9` or scroll
-to pick a hotbar slot.
+mouse to look, **left click** mine, **right click** place, `Q` drop item (`Shift+Q` for the
+whole stack), `E` inventory, `1`–`9` or scroll to pick a hotbar slot.
 
 **Player 2 (split-screen)** — arrow keys move, `/` sprint, `I` `J` `K` `L` look, `N` jump,
-`Right Shift` descend, `U` mine, `O` place, `M` inventory, `P` cycle hotbar.
+`Right Shift` descend, `U` mine, `O` place, `.` drop, `M` inventory, `P` cycle hotbar.
+
+**In the inventory without a mouse** — your movement keys move a yellow slot cursor, your
+place key picks up/puts down a stack, and your dig key takes a single item. On a gamepad:
+d-pad or left stick to move, **A** to take/place, **B** for one item, **X** to shift-click.
 
 Gamepads are auto-detected and assignable to either player in Settings. All keys are rebindable.
 
