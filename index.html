@@ -1,0 +1,3022 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Voxel Engine - Split-Screen Co-op</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #87ceeb; }
+        canvas { display: block; }
+        .crosshair {
+            position: absolute; width: 18px; height: 18px; top: 50%;
+            transform: translate(-50%, -50%); border: 2px solid rgba(255,255,255,0.6);
+            border-radius: 50%; pointer-events: none; z-index: 10;
+        }
+        #ch1 { left: 25%; } #ch2 { left: 75%; }
+        .hotbar {
+            position: absolute; bottom: 10px; width: 50%; display: flex;
+            justify-content: center; gap: 2px; pointer-events: none; z-index: 10;
+        }
+        #hb1 { left: 0; } #hb2 { left: 50%; }
+        /* ---- menus / inventory / slots ---- */
+        .hidden { display: none !important; }
+        .overlay {
+            position: absolute; inset: 0; z-index: 40; display: flex; flex-direction: column;
+            align-items: center; justify-content: center; gap: 10px;
+            background: rgba(8, 12, 20, 0.85); color: #fff; font-family: monospace;
+        }
+        .overlay h1 { font-size: 42px; margin: 0 0 8px; text-shadow: 3px 3px 0 #000; letter-spacing: 4px; }
+        .overlay h2 { font-size: 28px; margin: 0 0 6px; text-shadow: 2px 2px 0 #000; }
+        .overlay button, .overlay input {
+            font-family: monospace; font-size: 15px; padding: 8px 18px; min-width: 220px;
+            background: #3a3f4a; color: #fff; border: 2px solid #14161c; border-radius: 2px;
+            box-shadow: inset 0 2px 0 rgba(255,255,255,0.18), inset 0 -3px 0 rgba(0,0,0,0.35);
+            cursor: pointer; text-align: center;
+        }
+        .overlay input { background: #14161c; cursor: text; box-shadow: none; border-color: #555; text-align: left; }
+        .overlay button:hover { background: #4a5160; }
+        .overlay .row { display: flex; gap: 8px; }
+        .overlay .row button, .overlay .row input { min-width: 0; }
+        #wName { width: 230px; } #wSeed { width: 180px; }
+        .overlay .hint { margin-top: 12px; color: #9fd1ff; font-size: 13px; text-shadow: 1px 1px 0 #000; text-align: center; }
+        #worldList { width: 460px; max-height: 190px; overflow-y: auto; background: rgba(0,0,0,0.4);
+            border: 2px solid #14161c; padding: 4px; }
+        #worldList .world { padding: 6px 8px; cursor: pointer; font-size: 13px; }
+        #worldList .world:hover { background: rgba(255,255,255,0.08); }
+        #worldList .world.sel { background: rgba(90, 140, 220, 0.35); outline: 1px solid #9fd1ff; }
+        .dim { color: #9aa; }
+        #toast { position: absolute; bottom: 76px; left: 50%; transform: translateX(-50%);
+            color: #fff; font-family: monospace; font-size: 14px; text-shadow: 1px 1px 0 #000;
+            opacity: 0; transition: opacity 0.4s; pointer-events: none; z-index: 50; }
+        .slot { position: relative; width: 40px; height: 40px; background: #8b8b8b;
+            border: 2px solid; border-color: #373737 #fff #fff #373737; box-sizing: border-box; }
+        .slot img { width: 32px; height: 32px; margin: 2px; image-rendering: pixelated; display: none; }
+        .slot .cnt { position: absolute; right: 2px; bottom: 0; color: #fff; font: bold 13px monospace;
+            text-shadow: 1px 1px 0 #000; pointer-events: none; }
+        .slot .durbar { position: absolute; left: 3px; right: 3px; bottom: 2px; height: 3px;
+            background: #1c1c1c; display: none; pointer-events: none; }
+        .slot .durbar i { display: block; height: 100%; }
+        #invPanel .slot:hover { background: #a8a8a8; }
+        .slot.active { outline: 3px solid #fff; z-index: 1; }
+        .hotbar .slot { background: rgba(25,25,25,0.55); border-color: #1c1c1c #777 #777 #1c1c1c; }
+        #invWrap { position: absolute; inset: 0; z-index: 45; display: flex; align-items: center;
+            justify-content: center; background: rgba(0,0,0,0.5); }
+        /* split-screen: the inventory docks over the OPENING player's half only */
+        #invWrap.half-left { left: 0; right: 50%; }
+        #invWrap.half-right { left: 50%; right: 0; }
+        #invPanel .catTitle { color: #3a3a3a; font-size: 11px; margin: 2px 0 4px; }
+        #invPanel .invCatalog { display: grid; grid-template-columns: repeat(9, 40px); gap: 2px;
+            max-height: 132px; overflow-y: auto; margin-bottom: 8px; background: #9a9a9a; padding: 3px; }
+        .hearts { position: absolute; bottom: 56px; width: 50%; display: none; justify-content: center;
+            gap: 1px; font-size: 15px; z-index: 10; pointer-events: none; text-shadow: 1px 1px 0 #000;
+            font-family: monospace; }
+        #hp1 { left: 0; } #hp2 { left: 50%; }
+        body.mode-single #hp1 { width: 100%; }
+        /* hearts + drumsticks: identical glyph size, mirrored gutters off center */
+        .hearts span, .hunger span { width: 15px; text-align: center; display: inline-block; }
+        .hearts .full { color: #e3313b; } .hearts .half { color: #e3313b; opacity: 0.55; }
+        .hearts .empty { color: rgba(30,30,30,0.8); }
+        #hp1, #hp2 { transform: translateX(-92px); }   /* hearts left, hunger right */
+        .hunger { position: absolute; bottom: 56px; width: 50%; display: none; justify-content: center;
+            gap: 1px; font-size: 15px; z-index: 10; pointer-events: none; text-shadow: 1px 1px 0 #000;
+            font-family: monospace; transform: translateX(92px); }
+        #hg1 { left: 0; } #hg2 { left: 50%; }
+        body.mode-single #hg1 { width: 100%; }
+        .hunger .half { opacity: 0.55; }
+        .hunger .empty { filter: grayscale(1) brightness(0.45); }
+        /* damage flash instead of a text toast */
+        #hurt { position: absolute; inset: 0; z-index: 12; pointer-events: none;
+            background: radial-gradient(ellipse at center, rgba(120,0,0,0) 35%, rgba(160,0,0,0.55) 100%);
+            opacity: 0; transition: opacity 0.35s; }
+        /* furnace UI */
+        #invPanel .furnGrid { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
+        #invPanel .furnCol { display: flex; flex-direction: column; align-items: center; gap: 3px; }
+        #invPanel .fuelBar { width: 36px; height: 5px; background: #4a4a4a; }
+        #invPanel .fuelBar i { display: block; height: 100%; width: 0; background: #e8842c; }
+        #invPanel .progBar { width: 90px; height: 8px; background: #4a4a4a; }
+        #invPanel .progBar i { display: block; height: 100%; width: 0; background: #eee; }
+        #invPanel.mode-furnace .invCraft { display: none; }
+        #invPanel.mode-furnace .invArmor { visibility: hidden; }
+        #invPanel.mode-table .invArmor { visibility: hidden; }
+        #invPanel { background: #c6c6c6; border: 3px solid; border-color: #fff #373737 #373737 #fff;
+            padding: 10px 14px; font-family: monospace; user-select: none; }
+        #invPanel .invTitle { color: #3a3a3a; font-size: 14px; margin-bottom: 6px; }
+        #invPanel .invTop { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 8px; }
+        #invPanel .invArmor { display: flex; gap: 2px; }
+        #invPanel .invCraft { display: flex; align-items: center; gap: 6px; }
+        #invPanel .craftGrid { display: grid; grid-template-columns: repeat(2, 40px); gap: 2px; }
+        #invPanel .craftArrow { color: #555; font-size: 20px; }
+        #invPanel .invMain { display: grid; grid-template-columns: repeat(9, 40px); gap: 2px; margin-bottom: 8px; }
+        #invPanel .invHotbar { display: grid; grid-template-columns: repeat(9, 40px); gap: 2px; }
+        #invPanel .invHint { color: #555; font-size: 11px; margin-top: 6px; }
+        #cursorItem { position: fixed; z-index: 60; pointer-events: none; width: 32px; height: 32px; }
+        #cursorItem img { width: 32px; height: 32px; image-rendering: pixelated; }
+        #cursorItem .cnt { position: absolute; right: -2px; bottom: -2px; color: #fff; font: bold 13px monospace; text-shadow: 1px 1px 0 #000; }
+        #tooltip { position: fixed; z-index: 61; pointer-events: none; background: rgba(16, 8, 32, 0.92);
+            border: 2px solid #25064d; color: #eee; font: 12px monospace; padding: 6px 8px; line-height: 1.5; }
+        body.st-title #net, body.st-title .crosshair, body.st-title .hotbar,
+        body.st-title #stats, body.st-title .divider,
+        body.st-settings #net, body.st-settings .crosshair, body.st-settings .hotbar,
+        body.st-settings #stats, body.st-settings .divider { display: none; }
+        /* settings */
+        .setCols { display: flex; gap: 26px; align-items: flex-start; max-height: 68vh; overflow-y: auto; padding: 0 6px; }
+        .setCol { width: 330px; display: flex; flex-direction: column; gap: 6px; }
+        .setCol h3 { margin: 8px 0 2px; font-size: 14px; color: #9fd1ff; text-shadow: 1px 1px 0 #000; text-align: left; }
+        .setRow { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 13px; }
+        .setRow label { flex: 1; text-align: left; }
+        .setRow input[type=range] { width: 140px; min-width: 0; padding: 0; }
+        .setRow input[type=checkbox] { min-width: 0; width: 18px; height: 18px; }
+        .setRow select { min-width: 0; width: 110px; padding: 4px; font-family: monospace;
+            background: #14161c; color: #fff; border: 1px solid #555; }
+        .setRow span { width: 40px; text-align: right; }
+        .bindList { display: flex; flex-direction: column; gap: 3px; }
+        .bindRow { display: flex; justify-content: space-between; align-items: center; font-size: 12px; }
+        .bindRow button { min-width: 92px; padding: 3px 8px; font-size: 12px; }
+        .padRef { font-size: 11px; color: #9aa; line-height: 1.7; text-align: left; margin-top: 4px; }
+        /* single-view mode: one centered crosshair/hotbar, no divider or P2 widgets */
+        body.mode-single #ch2, body.mode-single #hb2, body.mode-single .divider { display: none; }
+        body.mode-single #ch1 { left: 50%; }
+        body.mode-single #hb1 { width: 100%; }
+        #stats {
+            position: absolute; bottom: 8px; left: 8px; color: #dff;
+            font-family: monospace; font-size: 11px; text-shadow: 1px 1px 0 #000;
+            pointer-events: none; z-index: 10; white-space: pre;
+        }
+        #net {
+            position: absolute; top: 8px; right: 8px; z-index: 20;
+            font-family: monospace; font-size: 12px; color: #fff; text-align: right;
+        }
+        #net button, #net input {
+            font-family: monospace; font-size: 12px; padding: 3px 8px;
+            background: rgba(0,0,0,0.55); color: #fff; border: 1px solid #9cf;
+            border-radius: 3px; outline: none;
+        }
+        #net input { width: 90px; }
+        #net button { cursor: pointer; }
+        #net button:hover { background: rgba(40,80,140,0.8); }
+        #netStatus { margin-top: 4px; text-shadow: 1px 1px 0 #000; max-width: 260px; }
+        .divider { position: absolute; left: 50%; top: 0; width: 2px; height: 100%; background: rgba(0,0,0,0.45); z-index: 5; pointer-events: none; }
+    </style>
+</head>
+<body>
+    <div id="ch1" class="crosshair"></div>
+    <div id="ch2" class="crosshair"></div>
+    <div id="hb1" class="hotbar"></div>
+    <div id="hb2" class="hotbar"></div>
+    <div id="hp1" class="hearts"></div>
+    <div id="hp2" class="hearts"></div>
+    <div id="hg1" class="hunger"></div>
+    <div id="hg2" class="hunger"></div>
+    <div id="hurt"></div>
+    <div class="divider"></div>
+    <div id="stats"></div>
+    <div id="net">
+        <button id="hostBtn">Host</button>
+        <input id="joinCode" placeholder="code" maxlength="12">
+        <button id="joinBtn">Join</button>
+        <div id="netStatus">offline (single machine)</div>
+    </div>
+
+    <div id="toast"></div>
+    <div id="title" class="overlay">
+        <h1>VOXEL WORLDS</h1>
+        <div id="worldList"></div>
+        <div class="row">
+            <input id="wName" placeholder="new world name" value="World 1">
+            <input id="wSeed" placeholder="seed (blank = random)">
+            <button id="btnMode"></button>
+        </div>
+        <div class="row">
+            <button id="btnNew">Create &amp; Play</button>
+            <button id="btnPlay">Play Selected</button>
+            <button id="btnDelete">Delete</button>
+        </div>
+        <div class="row">
+            <button id="btnSplit" class="splitLabel"></button>
+            <button id="btnSettingsT">Settings</button>
+        </div>
+        <div class="hint">START on controller 1 (or Enter / double-click) = play &nbsp;·&nbsp; START on controller 2 = split-screen<br>cross-PC co-op: Host / Join in game (top-right) &nbsp;·&nbsp; controls live in Settings</div>
+    </div>
+    <div id="pause" class="overlay hidden">
+        <h2>Paused</h2>
+        <button id="btnResume">Resume</button>
+        <button id="btnSave">Save Game</button>
+        <button id="btnModeP"></button>
+        <button id="btnSplitP" class="splitLabel"></button>
+        <button id="btnSettingsP">Settings</button>
+        <button id="btnQuit">Save &amp; Quit to Title</button>
+        <div class="hint">START / Esc resumes · world autosaves every 30 seconds</div>
+    </div>
+    <div id="settings" class="overlay hidden">
+        <h2>Settings</h2>
+        <div class="setCols">
+            <div class="setCol">
+                <h3>Video</h3>
+                <div class="setRow"><label>Render distance (chunks)</label><input id="setDist" type="range" min="2" max="6" step="1"><span id="setDistV"></span></div>
+                <div class="setRow"><label>Field of view</label><input id="setFov" type="range" min="60" max="90" step="1"><span id="setFovV"></span></div>
+                <div class="setRow"><label>Mouse sensitivity</label><input id="setSens" type="range" min="30" max="200" step="5"><span id="setSensV"></span></div>
+                <div class="setRow"><label>View bobbing</label><input id="setBob" type="checkbox"></div>
+                <div class="setRow"><label>Sun shadows</label><input id="setShadow" type="checkbox"></div>
+                <h3>Controllers</h3>
+                <div class="setRow"><label>Controller A drives</label><select id="setPadA"><option value="0">Player 1</option><option value="1">Player 2</option><option value="-1">Off</option></select></div>
+                <div class="setRow"><label>Controller B drives</label><select id="setPadB"><option value="0">Player 1</option><option value="1">Player 2</option><option value="-1">Off</option></select></div>
+                <div class="padRef">gamepad: left stick move · right stick look · RT dig · LT place/use · A jump · d-pad hotbar · Y inventory · START pause<br>
+                    fixed keys: 1-9 + mouse wheel = P1 hotbar · Enter = play (title) · Esc = pause / back</div>
+            </div>
+            <div class="setCol">
+                <h3>Keybinds — Player 1</h3><div id="bindsP1" class="bindList"></div>
+                <h3>Keybinds — Player 2</h3><div id="bindsP2" class="bindList"></div>
+                <div class="padRef">click a binding, then press any key or mouse button — Esc cancels</div>
+            </div>
+        </div>
+        <button id="btnSettingsBack">Done</button>
+    </div>
+    <div id="invWrap" class="hidden"><div id="invPanel"></div></div>
+    <div id="cursorItem" class="hidden"><img draggable="false"><span class="cnt"></span></div>
+    <div id="tooltip" class="hidden"></div>
+
+    <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+    <!-- ?v= is a cache-buster: browsers hold onto these .js files hard, so bumping
+         this number guarantees you see new code after an edit (no hard-refresh needed) -->
+    <script src="net-module.js?v=9"></script>
+    <script src="game-systems.js?v=9"></script>
+    <script type="importmap">
+        { "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        // ============================== CONSTANTS ==============================
+        const CS = 16;                 // chunk size
+        const PS = CS + 2;             // padded size (1-voxel border for seamless face culling)
+        const WORLD_CY = 7;            // vertical chunks -> world height 112 (mountains + snow line)
+        const WORLD_H = WORLD_CY * CS;
+        let   LOAD_R = 4;              // horizontal load radius (chunks) — Settings > render distance
+        let   SEED = 1337;             // deterministic shared default; host's seed wins on join
+
+        const GRAV = 27, JUMPV = 8.6, WALK = 4.6, EYE = 1.62, HW = 0.3, PH = 1.8;
+        const LOOK_SPEED = 2.6, REACH = 6, STEP = 1 / 60;
+        const DAY_LEN = 1200; // 20-minute cycle: 15 min day, 5 min night
+
+        // =============================== WORKER ================================
+        // Fully self-contained: stringified into a Blob so the game runs from file://
+        // (and so the Node perf harness can extract + execute the identical code).
+        /*__WORKER_SRC_BEGIN__*/
+        function workerMain() {
+            const CS = 16, PS = 18, WH = 112;   // WH must match WORLD_CY * 16
+            const GRAD3 = new Float32Array([1,1,0,-1,1,0,1,-1,0,-1,-1,0,1,0,1,-1,0,1,1,0,-1,-1,0,-1,0,1,1,0,-1,1,0,1,-1,0,-1,-1]);
+
+            function mulberry32(a) {
+                return function () {
+                    a |= 0; a = a + 0x6D2B79F5 | 0;
+                    let t = Math.imul(a ^ a >>> 15, 1 | a);
+                    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+                    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+                };
+            }
+
+            // 3D Simplex noise (Gustavson's method), seeded permutation tables.
+            function SimplexNoise(seed) {
+                const rand = mulberry32(seed);
+                const p = new Uint8Array(256);
+                for (let i = 0; i < 256; i++) p[i] = i;
+                for (let i = 255; i > 0; i--) {
+                    const j = (rand() * (i + 1)) | 0;
+                    const t = p[i]; p[i] = p[j]; p[j] = t;
+                }
+                this.perm = new Uint8Array(512);
+                this.permMod12 = new Uint8Array(512);
+                for (let i = 0; i < 512; i++) {
+                    this.perm[i] = p[i & 255];
+                    this.permMod12[i] = this.perm[i] % 12;
+                }
+            }
+            SimplexNoise.prototype.noise3 = function (xin, yin, zin) {
+                const perm = this.perm, permMod12 = this.permMod12;
+                const F3 = 1 / 3, G3 = 1 / 6;
+                let n0, n1, n2, n3;
+                const s = (xin + yin + zin) * F3;
+                const i = Math.floor(xin + s), j = Math.floor(yin + s), k = Math.floor(zin + s);
+                const t = (i + j + k) * G3;
+                const x0 = xin - (i - t), y0 = yin - (j - t), z0 = zin - (k - t);
+                let i1, j1, k1, i2, j2, k2;
+                if (x0 >= y0) {
+                    if (y0 >= z0)      { i1 = 1; j1 = 0; k1 = 0; i2 = 1; j2 = 1; k2 = 0; }
+                    else if (x0 >= z0) { i1 = 1; j1 = 0; k1 = 0; i2 = 1; j2 = 0; k2 = 1; }
+                    else               { i1 = 0; j1 = 0; k1 = 1; i2 = 1; j2 = 0; k2 = 1; }
+                } else {
+                    if (y0 < z0)       { i1 = 0; j1 = 0; k1 = 1; i2 = 0; j2 = 1; k2 = 1; }
+                    else if (x0 < z0)  { i1 = 0; j1 = 1; k1 = 0; i2 = 0; j2 = 1; k2 = 1; }
+                    else               { i1 = 0; j1 = 1; k1 = 0; i2 = 1; j2 = 1; k2 = 0; }
+                }
+                const x1 = x0 - i1 + G3, y1 = y0 - j1 + G3, z1 = z0 - k1 + G3;
+                const x2 = x0 - i2 + 2 * G3, y2 = y0 - j2 + 2 * G3, z2 = z0 - k2 + 2 * G3;
+                const x3 = x0 - 1 + 3 * G3, y3 = y0 - 1 + 3 * G3, z3 = z0 - 1 + 3 * G3;
+                const ii = i & 255, jj = j & 255, kk = k & 255;
+                let t0 = 0.6 - x0 * x0 - y0 * y0 - z0 * z0;
+                if (t0 < 0) n0 = 0; else {
+                    const g = permMod12[ii + perm[jj + perm[kk]]] * 3;
+                    t0 *= t0; n0 = t0 * t0 * (GRAD3[g] * x0 + GRAD3[g + 1] * y0 + GRAD3[g + 2] * z0);
+                }
+                let t1 = 0.6 - x1 * x1 - y1 * y1 - z1 * z1;
+                if (t1 < 0) n1 = 0; else {
+                    const g = permMod12[ii + i1 + perm[jj + j1 + perm[kk + k1]]] * 3;
+                    t1 *= t1; n1 = t1 * t1 * (GRAD3[g] * x1 + GRAD3[g + 1] * y1 + GRAD3[g + 2] * z1);
+                }
+                let t2 = 0.6 - x2 * x2 - y2 * y2 - z2 * z2;
+                if (t2 < 0) n2 = 0; else {
+                    const g = permMod12[ii + i2 + perm[jj + j2 + perm[kk + k2]]] * 3;
+                    t2 *= t2; n2 = t2 * t2 * (GRAD3[g] * x2 + GRAD3[g + 1] * y2 + GRAD3[g + 2] * z2);
+                }
+                let t3 = 0.6 - x3 * x3 - y3 * y3 - z3 * z3;
+                if (t3 < 0) n3 = 0; else {
+                    const g = permMod12[ii + 1 + perm[jj + 1 + perm[kk + 1]]] * 3;
+                    t3 *= t3; n3 = t3 * t3 * (GRAD3[g] * x3 + GRAD3[g + 1] * y3 + GRAD3[g + 2] * z3);
+                }
+                return 32 * (n0 + n1 + n2 + n3);
+            };
+
+            let cachedSeed = null, cachedNoise = null;
+            function noiseFor(seed) {
+                if (cachedSeed !== seed) { cachedSeed = seed; cachedNoise = new SimplexNoise(seed); }
+                return cachedNoise;
+            }
+
+            // ---- Terrain: deterministic f(x,y,z,seed). 3D density -> overhangs; 3D noise caves.
+            // Rolling base + a ridged mountain term: sparse steep peaks that climb past
+            // the snow line (y80+) toward full snow cover (y95+).
+            function heightAt(n, x, z) {
+                const base = 42 + 15 * (n.noise3(x * 0.010, 7.7, z * 0.010) * 0.62 +
+                                        n.noise3(x * 0.030, 3.1, z * 0.030) * 0.26 +
+                                        n.noise3(x * 0.085, 11.3, z * 0.085) * 0.12);
+                const rn = n.noise3(x * 0.0038, 3.3, z * 0.0038) * 0.65 +
+                           n.noise3(x * 0.009, 9.9, z * 0.009) * 0.35;
+                const ridge = Math.max(0, rn - 0.32);
+                return Math.min(WH - 8, base + Math.pow(ridge, 1.55) * 130);
+            }
+            function density(n, x, y, z, h) {
+                return (h - y) + 6 * n.noise3(x * 0.055, y * 0.055, z * 0.055);
+            }
+            // Ore veins: sparse deterministic vein CENTERS collected ONCE per chunk
+            // (fast), then per-voxel membership falls off with Manhattan distance ->
+            // natural 1-5 block clusters. Rarity + depth ranges per type; the rarity
+            // ladder is tuned so ores stay well under 1% of stone (no wall-of-coal).
+            function collectVeins(x0, y0, z0, seed) {
+                const list = [];
+                const yLo = Math.max(1, y0 - 1), yHi = Math.min(55, y0 + PS);
+                if (yLo > yHi) return list;                 // chunk entirely above ore range
+                for (let cy2 = yLo; cy2 <= yHi; cy2++)
+                    for (let cxx = x0 - 1; cxx <= x0 + PS; cxx++)
+                        for (let czz = z0 - 1; czz <= z0 + PS; czz++) {
+                            const hc = hash2(cxx * 17 + cy2, czz * 13 - cy2 * 7, seed);
+                            if (hc >= 0.0014) continue;     // fast reject for 99.9% of cells
+                            let t = 0, size = 0;
+                            if (hc < 0.00008 && cy2 <= 15) { t = 16; size = 0.30; }                    // diamond: 1-2, y1-15
+                            else if (hc < 0.00017 && cy2 <= 15) { t = 24; size = 0.42; }               // redstone: 2-4, y1-15
+                            else if (hc < 0.00032 && cy2 >= 5 && cy2 <= 29) { t = 15; size = 0.34; }   // gold: 1-3, y5-29
+                            else if (hc < 0.00065 && cy2 >= 5 && cy2 <= 54) { t = 14; size = 0.44; }   // iron: 2-4, y5-54
+                            else if (cy2 >= 5 && cy2 <= 52) { t = 13; size = 0.62; }                   // coal: 3-5, y5-52
+                            if (t) list.push([cxx, cy2, czz, t, size]);
+                        }
+                return list;
+            }
+            function oreFromVeins(veins, n, wx, wy, wz, seed) {
+                for (let i = 0; i < veins.length; i++) {
+                    const v = veins[i];
+                    const dx = wx - v[0], dy2 = wy - v[1], dz2 = wz - v[2];
+                    if (dx < -1 || dx > 1 || dy2 < -1 || dy2 > 1 || dz2 < -1 || dz2 > 1) continue;
+                    const md = Math.abs(dx) + Math.abs(dy2) + Math.abs(dz2);
+                    if (hash2(wx * 29 + wy * 17, wz * 23 + v[3], seed) < v[4] * (1 - md / 3)) return v[3];
+                }
+                if (n.noise3(wx * 0.09 - 51.1, wy * 0.09, wz * 0.09 + 77.7) > 0.78) return 12; // gravel pocket
+                return 3;
+            }
+
+            // Generates the PADDED 18^3 field. Border voxels are resampled from noise, so
+            // boundary faces cull exactly with zero cross-chunk communication.
+            function generate(cx, cy, cz, seed) {
+                const n = noiseFor(seed);
+                const data = new Uint8Array(PS * PS * PS);
+                const x0 = cx * CS - 1, y0 = cy * CS - 1, z0 = cz * CS - 1;
+                const veins = collectVeins(x0, y0, z0, seed);
+                for (let px = 0; px < PS; px++) {
+                    const wx = x0 + px;
+                    for (let pz = 0; pz < PS; pz++) {
+                        const wz = z0 + pz;
+                        const h = heightAt(n, wx, wz);
+                        let dAbove = density(n, wx, y0 + PS, wz, h);
+                        let belowSurf = 99, soilDepth = 2, surfSand = false;
+                        for (let py = PS - 1; py >= 0; py--) {
+                            const wy = y0 + py;
+                            let id = 0;
+                            if (wy <= 0) { id = 3; dAbove = 99; }
+                            else {
+                                const d = density(n, wx, wy, wz, h);
+                                if (d > 0) {
+                                    if (dAbove <= 0) {                    // exposed surface
+                                        belowSurf = 0;
+                                        surfSand = wy < 18;               // low ground: beach/desert
+                                        // soil depth: 1 on high slopes, 2-3 on plains/forests
+                                        soilDepth = wy > 75 ? 1 : 2 + (hash2(wx * 5 + 1, wz * 3 + 7, seed) < 0.5 ? 0 : 1);
+                                        if (surfSand) id = 4;
+                                        else {                            // snow line: none <80, patchy 80-95, full 95+
+                                            const snowP = wy >= 95 ? 1 : wy >= 80 ? (wy - 80) / 15 : 0;
+                                            id = (snowP > 0 && hash2(wx * 13 + 5, wz * 11 + wy, seed) < snowP) ? 5 : 1;
+                                        }
+                                    } else {                              // guaranteed strata under the surface:
+                                        belowSurf++;                      // grass -> dirt(1-3) -> stone; never stone-under-grass
+                                        if (surfSand) id = belowSurf <= 2 ? 4 : belowSurf <= 4 ? 11 : 3;
+                                        else if (belowSurf <= soilDepth) id = 2;
+                                        else id = 3;
+                                        if (id === 3 && wy >= 1 && wy <= 54) id = oreFromVeins(veins, n, wx, wy, wz, seed);
+                                    }
+                                    if (wy > 1 && n.noise3(wx * 0.09 + 137.7, wy * 0.115, wz * 0.09 - 91.3) > 0.6) id = 0; // caves
+                                }
+                                dAbove = d;
+                            }
+                            data[(py * PS + pz) * PS + px] = id;
+                        }
+                    }
+                }
+                placeTrees(data, cx, cy, cz, n, seed);
+                return data;
+            }
+
+            // ---- Trees: deterministic f(x,z,seed), so canopies crossing chunk borders
+            // mesh identically from every chunk that can see them (incl. padding).
+            const TREE_CHANCE = 0.012;
+            function hash2(x, z, seed) {
+                let h = (Math.imul(x, 374761393) + Math.imul(z, 668265263) + Math.imul(seed, 974634721)) | 0;
+                h = Math.imul(h ^ (h >>> 13), 1274126177);
+                return ((h ^ (h >>> 16)) >>> 0) / 4294967295;
+            }
+            const carvedAt = (n, x, y, z) => n.noise3(x * 0.09 + 137.7, y * 0.115, z * 0.09 - 91.3) > 0.6;
+            // Height varies per tree: 4-6 trunk blocks, from a second position hash.
+            function trunkAt(n, tx, tz, seed) {
+                if (hash2(tx, tz, seed) >= TREE_CHANCE) return null;
+                const h = heightAt(n, tx, tz);
+                const yTop = Math.min(WH - 2, Math.ceil(h) + 8);
+                let dAbove = density(n, tx, yTop + 1, tz, h);
+                for (let y = yTop; y > 2; y--) {           // find the real (3D) surface
+                    const d = density(n, tx, y, tz, h);
+                    if (d > 0 && dAbove <= 0) {
+                        if (y < 20 || y > 76) return null; // grass band only (no snow/beach trees)
+                        if (carvedAt(n, tx, y, tz)) return null; // cave mouth: no floating tree
+                        return { surf: y, H: 4 + (hash2(tx + 7919, tz - 104729, seed) * 3 | 0) };
+                    }
+                    dAbove = d;
+                }
+                return null;
+            }
+            function placeTrees(data, cx, cy, cz, n, seed) {
+                const x0 = cx * CS - 1, y0 = cy * CS - 1, z0 = cz * CS - 1;
+                const put = (wx, wy, wz, isLeaves) => { // clip to padded box; leaves never replace solids
+                    if (wy > WH - 2) return;
+                    const px = wx - x0, py = wy - y0, pz = wz - z0;
+                    if (px < 0 || px >= PS || py < 0 || py >= PS || pz < 0 || pz >= PS) return;
+                    const i = (py * PS + pz) * PS + px;
+                    if (isLeaves) { if (data[i] === 0) data[i] = 8; }
+                    else if (data[i] === 0 || data[i] === 8) data[i] = 7;
+                };
+                // scan all trunk columns whose radius-2 canopy can reach the padded region
+                for (let tx = x0 - 2; tx <= x0 + PS + 1; tx++)
+                    for (let tz = z0 - 2; tz <= z0 + PS + 1; tz++) {
+                        const tr = trunkAt(n, tx, tz, seed);
+                        if (!tr) continue;
+                        const top = tr.surf + tr.H;
+                        for (let ly = top - 2; ly <= top - 1; ly++)      // wide 5x5 layers
+                            for (let dx = -2; dx <= 2; dx++) for (let dz = -2; dz <= 2; dz++) {
+                                if (Math.abs(dx) === 2 && Math.abs(dz) === 2 &&
+                                    hash2(tx * 4 + dx + ly, tz * 4 + dz, seed) < 0.5) continue; // ragged corners
+                                put(tx + dx, ly, tz + dz, true);
+                            }
+                        for (let dx = -1; dx <= 1; dx++) for (let dz = -1; dz <= 1; dz++)
+                            put(tx + dx, top, tz + dz, true);            // 3x3 crown
+                        put(tx + 1, top + 1, tz, true); put(tx - 1, top + 1, tz, true);
+                        put(tx, top + 1, tz + 1, true); put(tx, top + 1, tz - 1, true);
+                        put(tx, top + 1, tz, true);                      // top cross
+                        for (let y = tr.surf + 1; y <= top; y++) put(tx, y, tz, false); // trunk
+                    }
+            }
+
+            // ---- Mesher: merged geometry, faces emitted ONLY where the neighbor is air.
+            // Textures come from the 8x8 atlas (128px, 16px tiles) TexGen builds on the
+            // main thread; the mesher just bakes tile UVs. Indices follow TexGen.ORDER:
+            // 0 grass_top 1 grass_side 2 dirt 3 stone 4 log_side 5 log_top 6 leaves 7 sand
+            // 8 snow 9 plank 10 white 11 cobble 12 stonebrick 13 sandstone_top 14 sandstone_side
+            // 15 gravel 16-19 coal/iron/gold/diamond ore 20 crafting_top 21 crafting_side
+            // 22 bookshelf 23 mossy 24 obsidian 25 furnace_front 26 furnace_top
+            const TILE = { // blockId -> [top, side, bottom] tile index
+                1: [0, 1, 2], 2: [2, 2, 2], 3: [3, 3, 3], 4: [7, 7, 7],
+                5: [8, 8, 8], 6: [9, 9, 9], 7: [5, 4, 5], 8: [6, 6, 6],
+                9: [11, 11, 11], 10: [12, 12, 12], 11: [13, 14, 13], 12: [15, 15, 15],
+                13: [16, 16, 16], 14: [17, 17, 17], 15: [18, 18, 18], 16: [19, 19, 19],
+                17: [20, 21, 9], 18: [9, 22, 9], 19: [23, 23, 23], 20: [24, 24, 24],
+                21: [26, 25, 26], 22: [27, 27, 27], 23: [28, 28, 28], 24: [29, 29, 29]
+            };
+            const AG = 8, TSTEP = 1 / AG, TIN = 0.5 / 128; // atlas grid, tile span, half-texel inset
+            // s uses Minecraft's face shading (top 1.0, Z 0.8, X 0.6, bottom 0.5);
+            // a = the two tangent axes of the face plane (for ambient occlusion probes).
+            const FACES = [
+                { d: [ 1,0,0], s: 0.60, ci: 1, a: [1,2], c: [[1,0,0],[1,1,0],[1,1,1],[1,0,1]], t: [[0,0],[0,1],[1,1],[1,0]] },
+                { d: [-1,0,0], s: 0.60, ci: 1, a: [1,2], c: [[0,0,1],[0,1,1],[0,1,0],[0,0,0]], t: [[0,0],[0,1],[1,1],[1,0]] },
+                { d: [0, 1,0], s: 1.00, ci: 0, a: [0,2], c: [[0,1,0],[0,1,1],[1,1,1],[1,1,0]], t: [[0,0],[0,1],[1,1],[1,0]] },
+                { d: [0,-1,0], s: 0.50, ci: 2, a: [0,2], c: [[0,0,0],[1,0,0],[1,0,1],[0,0,1]], t: [[0,0],[1,0],[1,1],[0,1]] },
+                { d: [0,0, 1], s: 0.80, ci: 1, a: [0,1], c: [[0,0,1],[1,0,1],[1,1,1],[0,1,1]], t: [[0,0],[1,0],[1,1],[0,1]] },
+                { d: [0,0,-1], s: 0.80, ci: 1, a: [0,1], c: [[1,0,0],[0,0,0],[0,1,0],[1,1,0]], t: [[0,0],[1,0],[1,1],[0,1]] }
+            ];
+            const AOL = [0.45, 0.66, 0.84, 1.0]; // vertex-AO multipliers (0 = fully boxed corner)
+            const aoScr = [0, 0, 0, 0], oU = [0, 0, 0], oV = [0, 0, 0];
+            const skyScr = [0, 0, 0, 0], blkScr = [0, 0, 0, 0]; // per-corner baked light
+            function vhash(x, y, z) { // deterministic per-voxel brightness variation
+                let h = (x * 374761393 + y * 668265263 + z * 1274126177) | 0;
+                h = Math.imul(h ^ (h >>> 13), 1274126177);
+                return ((h ^ (h >>> 16)) >>> 0) / 4294967295;
+            }
+            // plight: padded light volume, same indexing as `padded`. High nibble is
+            // skylight, low nibble is block (torch) light — both 0..15. Baked here into
+            // a per-vertex `lit` attribute so the shader can darken caves and glow
+            // around torches without any runtime light math.
+            function buildMesh(padded, cx, cy, cz, plight) {
+                const pos = [], nrm = [], col = [], uv = [], idx = [], lit = [];
+                let faces = 0, solids = 0;
+                // glass (22) and torches (23) don't occlude their neighbors' faces
+                const OCC = v => v > 0 && v !== 22 && v !== 23;
+                const pidx = (X, Y, Z) => ((Y + 1) * PS + (Z + 1)) * PS + (X + 1);
+                const solidP = (X, Y, Z) => OCC(padded[pidx(X, Y, Z)]) ? 1 : 0;
+                const NOLIGHT = !plight;
+                // Smooth lighting: a face corner averages the light of the (up to) four
+                // voxels touching it on the OPEN side of the face, skipping solid ones —
+                // this is what makes torch light pool smoothly instead of per-face banding.
+                const lightAt = (X, Y, Z) => {
+                    if (X < -1 || Y < -1 || Z < -1 || X > CS || Y > CS || Z > CS) return -1;
+                    if (OCC(padded[pidx(X, Y, Z)])) return -1;
+                    return plight[pidx(X, Y, Z)];
+                };
+                const cornerLight = (nx, ny, nz, ux, uy, uz, vx, vy, vz, out) => {
+                    let sky = 0, blk = 0, n = 0;
+                    for (let s = 0; s < 4; s++) {
+                        const ax = nx + (s & 1 ? ux : 0) + (s & 2 ? vx : 0);
+                        const ay = ny + (s & 1 ? uy : 0) + (s & 2 ? vy : 0);
+                        const az = nz + (s & 1 ? uz : 0) + (s & 2 ? vz : 0);
+                        const l = lightAt(ax, ay, az);
+                        if (l < 0) continue;
+                        sky += l >> 4; blk += l & 15; n++;
+                    }
+                    if (!n) { out[0] = 0; out[1] = 0; return; }
+                    out[0] = (sky / n) * (255 / 15);
+                    out[1] = (blk / n) * (255 / 15);
+                };
+                const cl = [0, 0];
+                const emitTorch = (x, y, z) => { // small post; UVs sample ONLY the torch
+                    // stick+flame columns of the tile. Mapping the whole 16x16 tile onto
+                    // a 2px-wide quad is what made placed torches look like bare slivers.
+                    const t = 28, P16 = TSTEP / 16;
+                    const tu = (t % AG) * TSTEP, tv = 1 - ((t / AG | 0) + 1) * TSTEP;
+                    const u0 = tu + 7 * P16, u1 = tu + 9 * P16;       // the 2 stick/flame columns
+                    const tv0 = tv, tv1 = tv + 14 * P16;              // base up through the flame tip
+                    const x0 = x + 0.4375, x1 = x + 0.5625, z0 = z + 0.4375, z1 = z + 0.5625, yb = y, yt = y + 0.625;
+                    // A torch is its own light source: full block light so the sprite
+                    // glows on its own, but only the REAL skylight of its voxel, so a
+                    // torch in a cave doesn't quietly pick up the daylight term.
+                    const tSky = NOLIGHT ? 255 : (plight[pidx(x, y, z)] >> 4) * 17;
+                    const quad = (ax, ay, az, bx2, by2, bz2, cx3, cy3, cz3, dx3, dy3, dz3, nx, ny, nz) => {
+                        const b = pos.length / 3;
+                        pos.push(ax, ay, az, bx2, by2, bz2, cx3, cy3, cz3, dx3, dy3, dz3);
+                        for (let q = 0; q < 4; q++) {
+                            nrm.push(nx * 127, ny * 127, nz * 127); col.push(255, 255, 255);
+                            lit.push(tSky, 255);
+                        }
+                        uv.push(u0, tv0, u1, tv0, u1, tv1, u0, tv1);
+                        idx.push(b, b + 1, b + 2, b, b + 2, b + 3);
+                        faces++;
+                    };
+                    quad(x0, yb, z1, x1, yb, z1, x1, yt, z1, x0, yt, z1, 0, 0, 1);
+                    quad(x1, yb, z0, x0, yb, z0, x0, yt, z0, x1, yt, z0, 0, 0, -1);
+                    quad(x1, yb, z1, x1, yb, z0, x1, yt, z0, x1, yt, z1, 1, 0, 0);
+                    quad(x0, yb, z0, x0, yb, z1, x0, yt, z1, x0, yt, z0, -1, 0, 0);
+                    quad(x0, yt, z0, x0, yt, z1, x1, yt, z1, x1, yt, z0, 0, 1, 0);
+                };
+                for (let y = 0; y < CS; y++) for (let z = 0; z < CS; z++) for (let x = 0; x < CS; x++) {
+                    const id = padded[((y + 1) * PS + (z + 1)) * PS + (x + 1)];
+                    if (!id) continue;
+                    solids++;
+                    if (id === 23) { emitTorch(x, y, z); continue; }
+                    const tiles = TILE[id] || TILE[3];
+                    const wx = cx * CS + x, wy = cy * CS + y, wz = cz * CS + z;
+                    const v = 0.93 + 0.09 * vhash(wx, wy, wz);
+                    for (let f = 0; f < 6; f++) {
+                        const F = FACES[f];
+                        const nb = padded[((y + 1 + F.d[1]) * PS + (z + 1 + F.d[2])) * PS + (x + 1 + F.d[0])];
+                        if (OCC(nb) || (id === 22 && nb === 22)) continue; // culled (glass merges with glass)
+                        const tile = tiles[F.ci];
+                        const u0 = (tile % AG) * TSTEP + TIN, u1 = (tile % AG + 1) * TSTEP - TIN;
+                        const row = tile / AG | 0;
+                        const v1 = 1 - row * TSTEP - TIN, v0 = 1 - (row + 1) * TSTEP + TIN; // v1 = tile top
+                        // Random per-face orientation breaks tiling repetition ("natural" look):
+                        // sides mirror horizontally (stays upright); tops/bottoms rotate 0/90/180/270.
+                        const h = vhash(wx * 6 + f, wy, wz * 3 + 1);
+                        const rot = F.d[1] !== 0 ? (h * 4) | 0 : (h < 0.5 ? 4 : 0); // 4 = mirror code
+                        const s = F.s * v, b = pos.length / 3;
+                        // Per-vertex ambient occlusion: probe the 3 neighbors that box in
+                        // each corner of the face; boxed-in corners darken. This is what
+                        // gives voxel worlds their depth.
+                        const nbx = x + F.d[0], nby = y + F.d[1], nbz = z + F.d[2];
+                        for (let ci = 0; ci < 4; ci++) {
+                            const cc = F.c[ci];
+                            oU[0] = oU[1] = oU[2] = 0; oV[0] = oV[1] = oV[2] = 0;
+                            oU[F.a[0]] = cc[F.a[0]] ? 1 : -1;
+                            oV[F.a[1]] = cc[F.a[1]] ? 1 : -1;
+                            const s1 = solidP(nbx + oU[0], nby + oU[1], nbz + oU[2]);
+                            const s2 = solidP(nbx + oV[0], nby + oV[1], nbz + oV[2]);
+                            const sc = solidP(nbx + oU[0] + oV[0], nby + oU[1] + oV[1], nbz + oU[2] + oV[2]);
+                            aoScr[ci] = (s1 && s2) ? 0 : 3 - (s1 + s2 + sc);
+                            if (NOLIGHT) { skyScr[ci] = 255; blkScr[ci] = 0; }
+                            else {
+                                cornerLight(nbx, nby, nbz, oU[0], oU[1], oU[2], oV[0], oV[1], oV[2], cl);
+                                skyScr[ci] = cl[0]; blkScr[ci] = cl[1];
+                            }
+                        }
+                        for (let ci = 0; ci < 4; ci++) {
+                            const cc = F.c[ci];
+                            let lu = F.t[ci][0], lv = F.t[ci][1];
+                            if (rot === 4) lu = 1 - lu;
+                            else for (let r = 0; r < rot; r++) { const t2 = lu; lu = lv; lv = 1 - t2; }
+                            pos.push(x + cc[0], y + cc[1], z + cc[2]);
+                            nrm.push(F.d[0] * 127, F.d[1] * 127, F.d[2] * 127); // Int8-quantized axis normals
+                            const s8 = Math.min(255, s * AOL[aoScr[ci]] * 255) | 0;
+                            col.push(s8, s8, s8); // Uint8 grayscale: face shade x variation x AO
+                            lit.push(skyScr[ci] | 0, blkScr[ci] | 0);
+                            uv.push(u0 + lu * (u1 - u0), v0 + lv * (v1 - v0));
+                        }
+                        // flip the quad diagonal toward the brighter pair (removes AO seams)
+                        if (aoScr[0] + aoScr[2] >= aoScr[1] + aoScr[3]) idx.push(b, b + 1, b + 2, b, b + 2, b + 3);
+                        else idx.push(b + 1, b + 2, b + 3, b + 1, b + 3, b);
+                        faces++;
+                    }
+                }
+                return {
+                    position: new Float32Array(pos), normal: new Int8Array(nrm),
+                    color: new Uint8Array(col), uv: new Float32Array(uv),
+                    lit: new Uint8Array(lit), index: new Uint32Array(idx), faces, solids
+                };
+            }
+
+            self.onmessage = function (e) {
+                const m = e.data;
+                const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
+                const t0 = now();
+                if (m.type === 'generate') {
+                    // Voxels only. The mesh can't be built here because lighting is a
+                    // cross-chunk flood fill that only the main thread can resolve; it
+                    // sends the column back as 'remesh' jobs once the light has settled.
+                    const padded = generate(m.cx, m.cy, m.cz, m.seed);
+                    const voxels = new Uint8Array(CS * CS * CS);
+                    let solids = 0;
+                    for (let y = 0; y < CS; y++) for (let z = 0; z < CS; z++) for (let x = 0; x < CS; x++) {
+                        const v = padded[((y + 1) * PS + (z + 1)) * PS + (x + 1)];
+                        voxels[(y * CS + z) * CS + x] = v;
+                        if (v) solids++;
+                    }
+                    self.postMessage({
+                        type: 'chunk', cx: m.cx, cy: m.cy, cz: m.cz, voxels: voxels.buffer,
+                        stats: { ms: now() - t0, faces: 0, solids }
+                    }, [voxels.buffer]);
+                } else if (m.type === 'remesh') {
+                    const padded = new Uint8Array(m.padded);
+                    const g = buildMesh(padded, m.cx, m.cy, m.cz, m.plight ? new Uint8Array(m.plight) : null);
+                    self.postMessage({
+                        type: 'mesh', cx: m.cx, cy: m.cy, cz: m.cz, rev: m.rev || 0,
+                        position: g.position.buffer, normal: g.normal.buffer,
+                        color: g.color.buffer, uv: g.uv.buffer, lit: g.lit.buffer, index: g.index.buffer,
+                        stats: { ms: now() - t0, faces: g.faces }
+                    }, [g.position.buffer, g.normal.buffer, g.color.buffer, g.uv.buffer, g.lit.buffer, g.index.buffer]);
+                }
+            };
+        }
+        /*__WORKER_SRC_END__*/
+
+        // Blob worker: works from file:// where worker files are blocked by CORS.
+        const workerUrl = URL.createObjectURL(
+            new Blob(['(' + workerMain.toString() + ')()'], { type: 'text/javascript' }));
+        const NUM_WORKERS = Math.min(4, Math.max(2, (navigator.hardwareConcurrency || 4) - 2));
+        const workers = [];
+        for (let i = 0; i < NUM_WORKERS; i++) {
+            const w = new Worker(workerUrl);
+            const entry = { w, busy: 0 };
+            w.onmessage = (e) => { entry.busy--; onWorkerMsg(e.data); dispatchJobs(); };
+            workers.push(entry);
+        }
+
+        // ============================ SCENE / RENDERER =========================
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x87ceeb);
+        scene.fog = new THREE.Fog(0x87ceeb, 24, 60); // hides the generation frontier
+
+        const renderer = new THREE.WebGLRenderer({ antialias: false });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.autoClear = false;      // manual: world pass(es), then depth-cleared hand pass
+        renderer.info.autoReset = false; // manual reset so the HUD sees every pass's draw calls
+        renderer.shadowMap.enabled = true;
+        renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+        // Hand-driven: one shadow pass per frame instead of one per render() call, so
+        // split-screen doesn't pay for the sun twice.
+        renderer.shadowMap.autoUpdate = false;
+        document.body.appendChild(renderer.domElement);
+
+        const aspect = (window.innerWidth / 2) / window.innerHeight;
+        const camera1 = new THREE.PerspectiveCamera(75, aspect, 0.1, 400);
+        const camera2 = new THREE.PerspectiveCamera(75, aspect, 0.1, 400);
+        camera1.rotation.order = 'YXZ';
+        camera2.rotation.order = 'YXZ';
+        // Layers: 1 = P1-only objects (rendered by camera2), 2 = P2-only (camera1).
+        // Hides each player's own body AND their own-target highlight from the other view.
+        camera1.layers.enable(2);
+        camera2.layers.enable(1);
+
+        // Split-screen renders the scene twice; update world matrices ONCE per frame
+        // instead of inside every render pass.
+        scene.matrixWorldAutoUpdate = false;
+
+        // Light rig: sky/ground hemisphere + a warm sun that travels with timeOfDay.
+        // The sun casts real shadow maps; its ortho frustum is small and re-centred on
+        // the player every frame, so texel density stays high however far you walk.
+        const hemiLight = new THREE.HemisphereLight(0xcfe5ff, 0x9a8464, 0.7);
+        scene.add(hemiLight);
+        const dirLight = new THREE.DirectionalLight(0xfff3e0, 0.85);
+        dirLight.position.set(60, 120, 40);
+        dirLight.castShadow = true;
+        const SHADOW_EXT = 42;                       // half-width of the shadowed box
+        dirLight.shadow.mapSize.set(2048, 2048);
+        dirLight.shadow.camera.left = -SHADOW_EXT;
+        dirLight.shadow.camera.right = SHADOW_EXT;
+        dirLight.shadow.camera.top = SHADOW_EXT;
+        dirLight.shadow.camera.bottom = -SHADOW_EXT;
+        dirLight.shadow.camera.near = 1;
+        dirLight.shadow.camera.far = 420;
+        dirLight.shadow.bias = -0.0012;              // kills acne on flat voxel tops
+        dirLight.shadow.normalBias = 0.045;
+        scene.add(dirLight);
+        scene.add(dirLight.target);
+        let shadowsOn = true;
+
+        const sunDir = new THREE.Vector3(0.4, 0.85, 0.3);
+        // Re-aims the sun's shadow box at whoever we're following. Snapping the centre
+        // to whole world units stops the shadow edges from crawling as you walk.
+        function updateShadowCamera(p) {
+            const cam = dirLight.shadow.camera;
+            const cx2 = Math.round(p.pos.x), cy2 = Math.round(p.pos.y), cz2 = Math.round(p.pos.z);
+            dirLight.target.position.set(cx2, cy2, cz2);
+            const d = dirLight.position.length() || 1;
+            sunDir.copy(dirLight.position).multiplyScalar(1 / d);
+            dirLight.position.set(cx2 + sunDir.x * 200, cy2 + sunDir.y * 200, cz2 + sunDir.z * 200);
+            cam.updateProjectionMatrix();
+        }
+
+        // Block texture atlas: TexGen recreates the uploaded 16x16 tiles procedurally.
+        // NearestFilter + no mipmaps = crisp pixels (no blur) at any distance.
+        const atlasTex = new THREE.CanvasTexture(TexGen.buildAtlas(document.createElement('canvas')));
+        atlasTex.magFilter = THREE.NearestFilter;
+        atlasTex.minFilter = THREE.NearestFilter;
+        atlasTex.generateMipmaps = false;
+        atlasTex.colorSpace = THREE.SRGBColorSpace;
+        // alphaTest gives cutout transparency (glass panes, torch sprite edges) with
+        // zero sorting cost; every other tile is fully opaque so nothing else changes.
+        const chunkMaterial = new THREE.MeshLambertMaterial({ map: atlasTex, vertexColors: true, alphaTest: 0.5 });
+        chunkMaterial.shadowSide = THREE.FrontSide;
+
+        /*__SHADER_SRC_START__*/
+        // ---- baked voxel light, applied on top of Three's lighting ----------------
+        // `alight` carries the mesher's two flood-filled channels per vertex:
+        //   .x skylight  — how much of the open sky reaches this corner
+        //   .y blocklight — how much torch light reaches it
+        // Skylight gates BOTH the sun and the ambient term, which is what actually
+        // makes a cave dark at noon: no sky reaches it, so no sun reaches it either.
+        // Blocklight is then added back as a warm, quadratic falloff glow.
+        const lightUniforms = {
+            uSkyBright: { value: 1 },                                  // day/night scalar
+            uTorchCol: { value: new THREE.Color(1.0, 0.66, 0.32) },    // torch flame tint
+            uCaveFloor: { value: new THREE.Color(0.055, 0.06, 0.085) } // faintest visible dark
+        };
+        function applyVoxelLight(mat) {
+            mat.onBeforeCompile = sh => {
+                sh.uniforms.uSkyBright = lightUniforms.uSkyBright;
+                sh.uniforms.uTorchCol = lightUniforms.uTorchCol;
+                sh.uniforms.uCaveFloor = lightUniforms.uCaveFloor;
+                sh.vertexShader = 'attribute vec2 alight;\nvarying vec2 vAL;\n' + sh.vertexShader
+                    .replace('#include <begin_vertex>', '#include <begin_vertex>\n\tvAL = alight;');
+                sh.fragmentShader =
+                    'uniform float uSkyBright;\nuniform vec3 uTorchCol;\nuniform vec3 uCaveFloor;\nvarying vec2 vAL;\n' +
+                    sh.fragmentShader.replace('#include <lights_fragment_end>', `#include <lights_fragment_end>
+                        float skyV = vAL.x;
+                        float blkV = vAL.y;
+                        float sunReach = skyV * skyV;               // sharpen the cave mouth
+                        reflectedLight.directDiffuse *= sunReach;
+                        reflectedLight.indirectDiffuse *= mix(0.045, 1.0, skyV * mix(0.35, 1.0, uSkyBright));
+                        reflectedLight.indirectDiffuse += diffuseColor.rgb * uTorchCol * (blkV * blkV) * 1.35;
+                        reflectedLight.indirectDiffuse += diffuseColor.rgb * uCaveFloor;`);
+            };
+            mat.customProgramCacheKey = () => 'voxel-light-v1';
+            return mat;
+        }
+        /*__SHADER_SRC_END__*/
+        applyVoxelLight(chunkMaterial);
+
+        // ============================ CHUNK MANAGER ============================
+        const chunks = new Map();        // key -> {cx,cy,cz, voxels, mesh, rev, state}
+        const pendingGen = new Set();
+        const editsByChunk = new Map();  // key -> Map<localIdx, blockId>  (survives unload; is the net sync payload)
+        const jobQueue = [];
+        const perf = { genMs: 0, genCount: 0, faces: 0, solids: 0 };
+
+        const key = (cx, cy, cz) => cx + ',' + cy + ',' + cz;
+
+        function dispatchJobs() {
+            while (jobQueue.length) {
+                let best = null;
+                for (const e of workers) if (e.busy < 2 && (!best || e.busy < best.busy)) best = e;
+                if (!best) return;
+                const job = jobQueue.shift();
+                best.busy++;
+                if (job.type === 'remesh') best.w.postMessage(job, [job.padded, job.plight]);
+                else best.w.postMessage(job);
+            }
+        }
+
+        function onWorkerMsg(m) {
+            const k = key(m.cx, m.cy, m.cz);
+            const ch = chunks.get(k);
+            if (!ch) return; // unloaded while in flight
+            if (m.type === 'chunk') {
+                pendingGen.delete(k);
+                ch.voxels = new Uint8Array(m.voxels);
+                ch.state = 'ready';
+                perf.genMs += m.stats.ms; perf.genCount++;
+                perf.faces += m.stats.faces; perf.solids += m.stats.solids;
+                const edits = editsByChunk.get(k);
+                if (edits && edits.size) for (const [li, id] of edits) ch.voxels[li] = id;
+                // No mesh yet: the column has to be lit first, and seeding it marks
+                // every chunk in the column dirty so lightTick meshes them.
+                tryLightColumn(m.cx, m.cz);
+            } else if (m.type === 'mesh') {
+                if (m.rev !== ch.rev) return; // stale revision
+                applyMesh(ch, m);
+            }
+        }
+
+        function applyMesh(ch, m) {
+            if (ch.mesh) { scene.remove(ch.mesh); ch.mesh.geometry.dispose(); ch.mesh = null; }
+            const posArr = new Float32Array(m.position);
+            if (posArr.length === 0) return; // fully air or fully buried: zero draw calls
+            const g = new THREE.BufferGeometry();
+            g.setAttribute('position', new THREE.BufferAttribute(posArr, 3));
+            g.setAttribute('normal', new THREE.BufferAttribute(new Int8Array(m.normal), 3, true));  // normalized
+            g.setAttribute('color', new THREE.BufferAttribute(new Uint8Array(m.color), 3, true));   // normalized
+            g.setAttribute('alight', new THREE.BufferAttribute(new Uint8Array(m.lit), 2, true));    // sky, block
+            g.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(m.uv), 2));
+            g.setIndex(new THREE.BufferAttribute(new Uint32Array(m.index), 1));
+            g.computeBoundingSphere(); // enables Three's per-chunk frustum culling
+            const mesh = new THREE.Mesh(g, chunkMaterial);
+            mesh.position.set(ch.cx * CS, ch.cy * CS, ch.cz * CS);
+            mesh.matrixAutoUpdate = false;
+            mesh.castShadow = true;
+            mesh.receiveShadow = true;
+            mesh.updateMatrix();
+            scene.add(mesh);
+            ch.mesh = mesh;
+        }
+
+        /*__LIGHT_SRC_START__*/
+        // ============================= LIGHT ENGINE ============================
+        // Minecraft-style flood-fill lighting. Every voxel carries two independent
+        // 4-bit channels packed into one byte: skylight in the high nibble, block
+        // (torch) light in the low one. Skylight falls straight down at full strength
+        // and loses a level per sideways step; block light loses one per step in every
+        // direction. Both spread by BFS across chunk borders, so a torch lights the
+        // room it's in rather than the chunk it happens to sit in.
+        //
+        // The work is budgeted per frame: terrain streaming in can enqueue hundreds of
+        // thousands of voxels, and doing that in one go would stall the frame.
+        const lightOpaque = id => id > 0 && id !== 22 && id !== 23; // glass + torch pass light
+        const emitOf = id => (id === 23 ? 14 : 0);                  // torches are the light source
+        const DX = [1, -1, 0, 0, 0, 0], DY = [0, 0, 1, -1, 0, 0], DZ = [0, 0, 0, 0, 1, -1];
+        const DIR_DOWN = 3;
+
+        const litColumns = new Set();   // 'cx,cz' whose skylight has been seeded
+        const litDirty = new Set();     // chunk keys whose light changed since last remesh
+        const skyQ = [], blkQ = [], skyRemQ = [], blkRemQ = [];
+        let skyH = 0, blkH = 0, skyRH = 0, blkRH = 0;
+
+        function chunkOf(wx, wy, wz) {
+            if (wy < 0 || wy >= WORLD_H) return null;
+            return chunks.get(key(Math.floor(wx / CS), Math.floor(wy / CS), Math.floor(wz / CS))) || null;
+        }
+        const localIdx = (wx, wy, wz) =>
+            (((wy % CS) + CS) % CS * CS + ((wz % CS) + CS) % CS) * CS + ((wx % CS) + CS) % CS;
+        function ensureLight(ch) {
+            if (!ch.light) ch.light = new Uint8Array(CS * CS * CS);
+            return ch.light;
+        }
+        function getSky(wx, wy, wz) {
+            if (wy >= WORLD_H) return 15;               // open air above the world
+            const ch = chunkOf(wx, wy, wz);
+            return ch && ch.light ? ch.light[localIdx(wx, wy, wz)] >> 4 : 0;
+        }
+        function getBlk(wx, wy, wz) {
+            const ch = chunkOf(wx, wy, wz);
+            return ch && ch.light ? ch.light[localIdx(wx, wy, wz)] & 15 : 0;
+        }
+        function setSky(wx, wy, wz, v) {
+            const ch = chunkOf(wx, wy, wz);
+            if (!ch || !ch.voxels) return;
+            const l = ensureLight(ch), i = localIdx(wx, wy, wz);
+            if ((l[i] >> 4) === v) return;
+            l[i] = (v << 4) | (l[i] & 15);
+            markLit(ch, wx, wy, wz);
+        }
+        function setBlk(wx, wy, wz, v) {
+            const ch = chunkOf(wx, wy, wz);
+            if (!ch || !ch.voxels) return;
+            const l = ensureLight(ch), i = localIdx(wx, wy, wz);
+            if ((l[i] & 15) === v) return;
+            l[i] = (l[i] & 0xF0) | v;
+            markLit(ch, wx, wy, wz);
+        }
+        // A lit voxel on a chunk seam also changes the neighbour's baked border, so
+        // both sides have to be re-meshed or a bright seam appears along the join.
+        function markLit(ch, wx, wy, wz) {
+            litDirty.add(key(ch.cx, ch.cy, ch.cz));
+            const lx = wx - ch.cx * CS, ly = wy - ch.cy * CS, lz = wz - ch.cz * CS;
+            if (lx === 0) litDirty.add(key(ch.cx - 1, ch.cy, ch.cz));
+            if (lx === CS - 1) litDirty.add(key(ch.cx + 1, ch.cy, ch.cz));
+            if (ly === 0) litDirty.add(key(ch.cx, ch.cy - 1, ch.cz));
+            if (ly === CS - 1) litDirty.add(key(ch.cx, ch.cy + 1, ch.cz));
+            if (lz === 0) litDirty.add(key(ch.cx, ch.cy, ch.cz - 1));
+            if (lz === CS - 1) litDirty.add(key(ch.cx, ch.cy, ch.cz + 1));
+        }
+        const pushSky = (x, y, z) => skyQ.push(x, y, z);
+        const pushBlk = (x, y, z) => blkQ.push(x, y, z);
+
+        // Seeds a whole 16x16xWORLD_H column at once. Waiting for the full column means
+        // the top-down sky scan is exact on the first pass instead of being patched up
+        // chunk by chunk as they stream in.
+        function tryLightColumn(cx, cz) {
+            const ck = cx + ',' + cz;
+            if (litColumns.has(ck)) return;
+            const stack = [];
+            for (let cy = 0; cy < WORLD_CY; cy++) {
+                const ch = chunks.get(key(cx, cy, cz));
+                if (!ch || !ch.voxels) return;          // column incomplete: try again later
+                stack.push(ch);
+            }
+            litColumns.add(ck);
+            for (const ch of stack) ensureLight(ch);
+            const bx = cx * CS, bz = cz * CS;
+            const openCol = new Uint8Array(CS * CS * WORLD_H); // local scratch: sees sky?
+            const vox = (lx, wy, lz) => stack[(wy / CS) | 0].voxels[((wy % CS) * CS + lz) * CS + lx];
+            for (let lx = 0; lx < CS; lx++) for (let lz = 0; lz < CS; lz++) {
+                let open = true;
+                for (let wy = WORLD_H - 1; wy >= 0; wy--) {
+                    const id = vox(lx, wy, lz);
+                    if (open && lightOpaque(id)) open = false;
+                    if (open) {
+                        openCol[(wy * CS + lz) * CS + lx] = 1;
+                        stack[(wy / CS) | 0].light[((wy % CS) * CS + lz) * CS + lx] |= 15 << 4;
+                    }
+                    const e = emitOf(id);
+                    if (e) { setBlk(bx + lx, wy, bz + lz, e); pushBlk(bx + lx, wy, bz + lz); }
+                }
+            }
+            // Only sky-lit voxels that actually border darkness need to enter the BFS:
+            // the column edges (light crossing into neighbouring columns) and cave
+            // mouths (a sideways neighbour that's open but not sky-lit).
+            for (let lx = 0; lx < CS; lx++) for (let lz = 0; lz < CS; lz++) {
+                const edge = lx === 0 || lx === CS - 1 || lz === 0 || lz === CS - 1;
+                for (let wy = 0; wy < WORLD_H; wy++) {
+                    if (!openCol[(wy * CS + lz) * CS + lx]) continue;
+                    let seed = edge;
+                    if (!seed) for (let d = 0; d < 4 && !seed; d++) {
+                        const nx = lx + DX[d], nz = lz + DZ[d];
+                        if (nx < 0 || nz < 0 || nx >= CS || nz >= CS) { seed = true; break; }
+                        if (!openCol[(wy * CS + nz) * CS + nx] && !lightOpaque(vox(nx, wy, nz))) seed = true;
+                    }
+                    if (seed) pushSky(bx + lx, wy, bz + lz);
+                }
+            }
+            for (const ch of stack) litDirty.add(key(ch.cx, ch.cy, ch.cz));
+        }
+
+        function stepSky(budget) {
+            while (skyH < skyQ.length && budget-- > 0) {
+                const x = skyQ[skyH], y = skyQ[skyH + 1], z = skyQ[skyH + 2]; skyH += 3;
+                const lv = getSky(x, y, z);
+                if (lv <= 0) continue;
+                for (let d = 0; d < 6; d++) {
+                    const nx = x + DX[d], ny = y + DY[d], nz = z + DZ[d];
+                    if (ny < 0 || ny >= WORLD_H) continue;
+                    const nb = getBlock(nx, ny, nz);
+                    if (nb === undefined || lightOpaque(nb)) continue;
+                    // straight down through open air keeps full strength — MC sky columns
+                    const want = (d === DIR_DOWN && lv === 15) ? 15 : lv - 1;
+                    if (want <= 0 || getSky(nx, ny, nz) >= want) continue;
+                    setSky(nx, ny, nz, want);
+                    pushSky(nx, ny, nz);
+                }
+            }
+            if (skyH > 60000) { skyQ.splice(0, skyH); skyH = 0; }
+        }
+        function stepBlk(budget) {
+            while (blkH < blkQ.length && budget-- > 0) {
+                const x = blkQ[blkH], y = blkQ[blkH + 1], z = blkQ[blkH + 2]; blkH += 3;
+                const lv = getBlk(x, y, z);
+                if (lv <= 1) continue;
+                for (let d = 0; d < 6; d++) {
+                    const nx = x + DX[d], ny = y + DY[d], nz = z + DZ[d];
+                    if (ny < 0 || ny >= WORLD_H) continue;
+                    const nb = getBlock(nx, ny, nz);
+                    if (nb === undefined || lightOpaque(nb)) continue;
+                    if (getBlk(nx, ny, nz) >= lv - 1) continue;
+                    setBlk(nx, ny, nz, lv - 1);
+                    pushBlk(nx, ny, nz);
+                }
+            }
+            if (blkH > 60000) { blkQ.splice(0, blkH); blkH = 0; }
+        }
+        // Removal is the standard two-phase trick: knock out every voxel that was lit
+        // BY the one being removed, and hand anything brighter to the add queue so it
+        // immediately floods back into the hole.
+        function removeSkyAt(x, y, z) {
+            const lv = getSky(x, y, z);
+            if (lv > 0) { setSky(x, y, z, 0); skyRemQ.push(x, y, z, lv); }
+        }
+        function removeBlkAt(x, y, z) {
+            const lv = getBlk(x, y, z);
+            if (lv > 0) { setBlk(x, y, z, 0); blkRemQ.push(x, y, z, lv); }
+        }
+        function stepSkyRem(budget) {
+            while (skyRH < skyRemQ.length && budget-- > 0) {
+                const x = skyRemQ[skyRH], y = skyRemQ[skyRH + 1], z = skyRemQ[skyRH + 2], lv = skyRemQ[skyRH + 3];
+                skyRH += 4;
+                for (let d = 0; d < 6; d++) {
+                    const nx = x + DX[d], ny = y + DY[d], nz = z + DZ[d];
+                    if (ny < 0 || ny >= WORLD_H) continue;
+                    const nl = getSky(nx, ny, nz);
+                    if (nl === 0) continue;
+                    const fromHere = (d === DIR_DOWN && lv === 15) ? nl === 15 : nl < lv;
+                    if (fromHere) { setSky(nx, ny, nz, 0); skyRemQ.push(nx, ny, nz, nl); }
+                    else pushSky(nx, ny, nz);
+                }
+            }
+            if (skyRH >= skyRemQ.length) { skyRemQ.length = 0; skyRH = 0; }
+        }
+        function stepBlkRem(budget) {
+            while (blkRH < blkRemQ.length && budget-- > 0) {
+                const x = blkRemQ[blkRH], y = blkRemQ[blkRH + 1], z = blkRemQ[blkRH + 2], lv = blkRemQ[blkRH + 3];
+                blkRH += 4;
+                for (let d = 0; d < 6; d++) {
+                    const nx = x + DX[d], ny = y + DY[d], nz = z + DZ[d];
+                    if (ny < 0 || ny >= WORLD_H) continue;
+                    const nl = getBlk(nx, ny, nz);
+                    if (nl === 0) continue;
+                    if (nl < lv) { setBlk(nx, ny, nz, 0); blkRemQ.push(nx, ny, nz, nl); }
+                    else pushBlk(nx, ny, nz);
+                }
+            }
+            if (blkRH >= blkRemQ.length) { blkRemQ.length = 0; blkRH = 0; }
+        }
+
+        // Re-light around a single edited voxel.
+        function relightEdit(wx, wy, wz, newId) {
+            removeSkyAt(wx, wy, wz);
+            removeBlkAt(wx, wy, wz);
+            const e = emitOf(newId);
+            if (e) { setBlk(wx, wy, wz, e); pushBlk(wx, wy, wz); }
+            if (!lightOpaque(newId)) {   // block removed: let the neighbours pour back in
+                for (let d = 0; d < 6; d++) {
+                    const nx = wx + DX[d], ny = wy + DY[d], nz = wz + DZ[d];
+                    if (ny < 0 || ny >= WORLD_H) continue;
+                    pushSky(nx, ny, nz); pushBlk(nx, ny, nz);
+                }
+            }
+        }
+        const lightIdle = () => skyH >= skyQ.length && blkH >= blkQ.length &&
+                                skyRH >= skyRemQ.length && blkRH >= blkRemQ.length;
+
+        // Budgeted per frame. Removals always run to completion first: if an add ran
+        // against a half-removed field it would re-seed from a value that's about to
+        // vanish and leave permanent bright scars.
+        let lastLightFlush = 0;
+        function lightTick() {
+            const t0 = performance.now();
+            while (performance.now() - t0 < 3.0) {
+                if (skyRH < skyRemQ.length || blkRH < blkRemQ.length) { stepSkyRem(400); stepBlkRem(400); }
+                else if (skyH < skyQ.length || blkH < blkQ.length) { stepSky(1500); stepBlk(1500); }
+                else break;
+            }
+            const idle = lightIdle();
+            if (idle) {
+                if (skyQ.length) { skyQ.length = 0; skyH = 0; }
+                if (blkQ.length) { blkQ.length = 0; blkH = 0; }
+            }
+            // Publish finished light as meshes. Waiting for a fully idle queue would
+            // starve during the initial stream-in — columns keep arriving and refilling
+            // it — and the world would stay invisible, so flush on a timer too. A chunk
+            // that gets more light afterwards simply gets re-meshed again.
+            if (litDirty.size && (idle || t0 - lastLightFlush > 200)) {
+                lastLightFlush = t0;
+                let n = idle ? 32 : 12;
+                for (const k of litDirty) {
+                    litDirty.delete(k);
+                    const ch = chunks.get(k);
+                    if (ch && ch.voxels) requestRemesh(ch.cx, ch.cy, ch.cz);
+                    if (--n <= 0) break;
+                }
+            }
+        }
+        /*__LIGHT_SRC_END__*/
+
+        let lastChunkUpdate = 0;
+        function updateChunks(force) {
+            const now = performance.now();
+            if (!force && now - lastChunkUpdate < 300) return;
+            lastChunkUpdate = now;
+
+            const needed = new Set();
+            const newJobs = [];
+            for (const p of players) {
+                if (p.idx > 0 && !splitMode) continue; // parked P2 shouldn't hold chunks
+                const pcx = Math.floor(p.pos.x / CS), pcz = Math.floor(p.pos.z / CS);
+                for (let dx = -LOAD_R; dx <= LOAD_R; dx++) for (let dz = -LOAD_R; dz <= LOAD_R; dz++) {
+                    if (dx * dx + dz * dz > LOAD_R * LOAD_R + 2) continue;
+                    for (let cy = 0; cy < WORLD_CY; cy++) {
+                        const cx = pcx + dx, cz = pcz + dz;
+                        const k = key(cx, cy, cz);
+                        needed.add(k);
+                        if (!chunks.has(k)) {
+                            chunks.set(k, { cx, cy, cz, voxels: null, mesh: null, rev: 0, state: 'loading' });
+                            pendingGen.add(k);
+                            newJobs.push({ type: 'generate', cx, cy, cz, seed: SEED, dist: dx * dx + dz * dz });
+                        }
+                    }
+                }
+            }
+            const unloadR = LOAD_R + 1.5;
+            for (const [k, ch] of chunks) {
+                if (needed.has(k)) continue;
+                let minD = Infinity;
+                for (const p of players) {
+                    const dx = ch.cx - Math.floor(p.pos.x / CS), dz = ch.cz - Math.floor(p.pos.z / CS);
+                    minD = Math.min(minD, dx * dx + dz * dz);
+                }
+                if (minD > unloadR * unloadR) {
+                    if (ch.mesh) { scene.remove(ch.mesh); ch.mesh.geometry.dispose(); }
+                    chunks.delete(k);   // voxels GC'd; edits persist in editsByChunk
+                    pendingGen.delete(k);
+                    litColumns.delete(ch.cx + ',' + ch.cz); // column is holed: re-seed on reload
+                    litDirty.delete(k);
+                }
+            }
+            if (newJobs.length) {
+                newJobs.sort((a, b) => a.dist - b.dist); // nearest chunks first
+                jobQueue.push(...newJobs);
+                dispatchJobs();
+            }
+        }
+
+        // ---- Voxel access ----
+        function getBlock(wx, wy, wz) {
+            if (wy < 0) return 3;               // below world: solid
+            if (wy >= WORLD_H) return 0;        // above world: air
+            const cx = Math.floor(wx / CS), cy = Math.floor(wy / CS), cz = Math.floor(wz / CS);
+            const ch = chunks.get(key(cx, cy, cz));
+            if (!ch || !ch.voxels) return undefined; // not generated yet
+            return ch.voxels[((wy - cy * CS) * CS + (wz - cz * CS)) * CS + (wx - cx * CS)];
+        }
+        const solidAt = (wx, wy, wz) => {
+            const b = getBlock(wx, wy, wz);
+            return b === undefined ? true : (b > 0 && b !== 23); // torches are walk-through
+        };
+
+        function requestRemesh(cx, cy, cz) {
+            if (cy < 0 || cy >= WORLD_CY) return;
+            const k = key(cx, cy, cz);
+            const ch = chunks.get(k);
+            if (!ch || !ch.voxels) return;
+            ch.rev++;
+            // Assemble padded 18^3 blocks + light. The interior is a straight array copy;
+            // only the 1-voxel shell (~30% of the volume) needs cross-chunk lookups.
+            const padded = new Uint8Array(PS * PS * PS);
+            const plight = new Uint8Array(PS * PS * PS);
+            const lArr = ch.light;
+            for (let y = 0; y < CS; y++) for (let z = 0; z < CS; z++) {
+                const src = (y * CS + z) * CS, dst = ((y + 1) * PS + (z + 1)) * PS + 1;
+                for (let x = 0; x < CS; x++) {
+                    padded[dst + x] = ch.voxels[src + x];
+                    if (lArr) plight[dst + x] = lArr[src + x];
+                }
+            }
+            const x0 = cx * CS - 1, y0 = cy * CS - 1, z0 = cz * CS - 1;
+            for (let py = 0; py < PS; py++) for (let pz = 0; pz < PS; pz++) for (let px = 0; px < PS; px++) {
+                if (px && py && pz && px < PS - 1 && py < PS - 1 && pz < PS - 1) continue; // interior done
+                const wx = x0 + px, wy = y0 + py, wz = z0 + pz;
+                const b = getBlock(wx, wy, wz), i = (py * PS + pz) * PS + px;
+                padded[i] = b === undefined ? 0 : b;
+                plight[i] = (getSky(wx, wy, wz) << 4) | getBlk(wx, wy, wz);
+            }
+            jobQueue.unshift({ type: 'remesh', cx, cy, cz, rev: ch.rev,
+                              padded: padded.buffer, plight: plight.buffer });
+            dispatchJobs();
+        }
+
+        function setBlock(wx, wy, wz, id, fromNet) {
+            if (wy < 1 || wy >= WORLD_H) return false; // bedrock layer is permanent
+            const cx = Math.floor(wx / CS), cy = Math.floor(wy / CS), cz = Math.floor(wz / CS);
+            const k = key(cx, cy, cz);
+            const ch = chunks.get(k);
+            if (!ch || !ch.voxels) return false;
+            const lx = wx - cx * CS, ly = wy - cy * CS, lz = wz - cz * CS;
+            const li = (ly * CS + lz) * CS + lx;
+            if (ch.voxels[li] === id) return false;
+            ch.voxels[li] = id;
+            let em = editsByChunk.get(k);
+            if (!em) { em = new Map(); editsByChunk.set(k, em); }
+            em.set(li, id);
+            relightEdit(wx, wy, wz, id);  // queues the flood fill; lightTick re-meshes after
+            requestRemesh(cx, cy, cz);    // but show the edit itself on the very next frame
+            if (lx === 0) requestRemesh(cx - 1, cy, cz);
+            if (lx === CS - 1) requestRemesh(cx + 1, cy, cz);
+            if (ly === 0) requestRemesh(cx, cy - 1, cz);
+            if (ly === CS - 1) requestRemesh(cx, cy + 1, cz);
+            if (lz === 0) requestRemesh(cx, cy, cz - 1);
+            if (lz === CS - 1) requestRemesh(cx, cy, cz + 1);
+            if (!fromNet && net) net.sendBlock({ x: wx, y: wy, z: wz, id });
+            return true;
+        }
+
+        function resetWorld(seed, editsPayload) {
+            SEED = seed;
+            for (const [, ch] of chunks) {
+                if (ch.mesh) { scene.remove(ch.mesh); ch.mesh.geometry.dispose(); }
+            }
+            chunks.clear(); pendingGen.clear(); jobQueue.length = 0;
+            editsByChunk.clear();
+            litColumns.clear(); litDirty.clear();
+            skyQ.length = blkQ.length = skyRemQ.length = blkRemQ.length = 0;
+            skyH = blkH = skyRH = blkRH = 0;
+            if (editsPayload) for (const [k, list] of editsPayload) {
+                const m = new Map();
+                for (const [li, id] of list) m.set(li, id);
+                editsByChunk.set(k, m);
+            }
+            for (const p of players) { p.spawned = false; p.vel.set(0, 0, 0); }
+            updateChunks(true);
+        }
+        const serializeEdits = () => [...editsByChunk].map(([k, m]) => [k, [...m]]);
+
+        // ============================== PLAYERS ================================
+        const avatarBodyGeo = new THREE.BoxGeometry(0.55, 1.15, 0.32); // shared: avatars come
+        const avatarHeadGeo = new THREE.BoxGeometry(0.46, 0.46, 0.46); // and go with peers
+        const avatarArmGeo = new THREE.BoxGeometry(0.22, 0.85, 0.22);
+        function makeAvatar(color, layer) {
+            const g = new THREE.Group();
+            const body = new THREE.Mesh(avatarBodyGeo, new THREE.MeshLambertMaterial({ color }));
+            body.position.y = 0.62;
+            const head = new THREE.Mesh(avatarHeadGeo, new THREE.MeshLambertMaterial({ color: 0xd9b68c }));
+            head.position.y = 1.48;
+            // third-person: both arms visible, proportional to the body
+            const skin = new THREE.MeshLambertMaterial({ color: 0xc79470 });
+            const armL = new THREE.Mesh(avatarArmGeo, skin);
+            armL.position.set(-0.385, 0.78, 0);
+            const armR = new THREE.Mesh(avatarArmGeo, skin);
+            armR.position.set(0.385, 0.78, 0);
+            g.add(body, head, armL, armR);
+            for (const o of [body, head, armL, armR]) { o.castShadow = true; o.receiveShadow = true; }
+            if (layer) for (const o of [body, head, armL, armR]) o.layers.set(layer);
+            scene.add(g);
+            return g;
+        }
+
+        function makePlayer(idx) {
+            return {
+                idx,
+                pos: new THREE.Vector3(8.5 + idx * 3, WORLD_H + 4, 8.5),
+                vel: new THREE.Vector3(),
+                yaw: idx === 0 ? Math.PI * 0.25 : -Math.PI * 0.25, pitch: 0,
+                onGround: false, spawned: false, prevBrk: false, hurtT: 0,
+                health: 20, hunger: 20, sat: 5, jumpN: 0, mineN: 0, eating: null,
+                mineKey: null, mineT: 0, mineDur: 1, lastSwing: 0,
+                flying: false, prevJump: false, lastJumpTap: 0,
+                inv: new InventoryManager(),   // from game-systems.js
+                activeSlot: 0,                 // selected hotbar slot 0-8
+                restorePos: null,              // set when loading a save
+                cam: idx === 0 ? camera1 : camera2,
+                avatar: makeAvatar(idx === 0 ? 0x2f6fd0 : 0xd04f2f, idx + 1),
+                target: null, lastBreak: 0, lastPlace: 0, prevCycle: 0
+            };
+        }
+        const players = [makePlayer(0), makePlayer(1)];
+
+        function trySpawn(p) {
+            if (p.restorePos) { // loading a save: wait for that chunk, then restore exactly
+                const cy = Math.max(0, Math.min(WORLD_CY - 1, Math.floor(p.restorePos[1] / CS)));
+                const ch = chunks.get(key(Math.floor(p.restorePos[0] / CS), cy, Math.floor(p.restorePos[2] / CS)));
+                if (!ch || !ch.voxels) return;
+                p.pos.set(p.restorePos[0], p.restorePos[1], p.restorePos[2]);
+                p.restorePos = null;
+                p.vel.set(0, 0, 0);
+                p.fallPeak = p.pos.y;
+                p.spawned = true;
+                return;
+            }
+            const sx = 8.5 + p.idx * 3, sz = 8.5;
+            const cx = Math.floor(sx / CS), cz = Math.floor(sz / CS);
+            for (let cy = 0; cy < WORLD_CY; cy++) {
+                const ch = chunks.get(key(cx, cy, cz));
+                if (!ch || !ch.voxels) return; // wait for spawn chunks
+            }
+            for (let y = WORLD_H - 2; y > 0; y--) {
+                if (getBlock(Math.floor(sx), y, Math.floor(sz)) > 0) {
+                    p.pos.set(sx, y + 1.01, sz);
+                    p.vel.set(0, 0, 0);
+                    p.fallPeak = p.pos.y;
+                    p.spawned = true;
+                    return;
+                }
+            }
+        }
+
+        // ============================== PHYSICS ================================
+        // Per-axis AABB sweep vs. the voxel grid. Player box: 0.6 x 1.8 x 0.6, pos = feet.
+        function moveAxis(p, axis, amt) {
+            if (amt === 0) return;
+            p.pos[axis] += amt;
+            const e = 0.001;
+            const x0 = Math.floor(p.pos.x - HW), x1 = Math.floor(p.pos.x + HW);
+            const y0 = Math.floor(p.pos.y),      y1 = Math.floor(p.pos.y + PH);
+            const z0 = Math.floor(p.pos.z - HW), z1 = Math.floor(p.pos.z + HW);
+            for (let by = y0; by <= y1; by++) for (let bz = z0; bz <= z1; bz++) for (let bx = x0; bx <= x1; bx++) {
+                if (!solidAt(bx, by, bz)) continue;
+                if (p.pos.x - HW >= bx + 1 || p.pos.x + HW <= bx ||
+                    p.pos.y >= by + 1 || p.pos.y + PH <= by ||
+                    p.pos.z - HW >= bz + 1 || p.pos.z + HW <= bz) continue;
+                if (axis === 'x') { p.pos.x = amt > 0 ? bx - HW - e : bx + 1 + HW + e; p.vel.x = 0; }
+                else if (axis === 'z') { p.pos.z = amt > 0 ? bz - HW - e : bz + 1 + HW + e; p.vel.z = 0; }
+                else {
+                    if (amt > 0) { p.pos.y = by - PH - e; p.vel.y = 0; }
+                    else { p.pos.y = by + 1 + e; p.vel.y = 0; p.onGround = true; }
+                }
+            }
+        }
+
+        function stepPlayer(p, dt, inp) {
+            if (!p.spawned) { trySpawn(p); return; }
+            // creative flight: double-tap jump toggles, jump/descend = vertical
+            const nowMs = performance.now();
+            const jumpEdge = inp.jump && !p.prevJump;
+            p.prevJump = inp.jump;
+            if (worldMode !== 'creative') p.flying = false;
+            else if (jumpEdge) {
+                if (nowMs - (p.lastJumpTap || 0) < 300) { p.flying = !p.flying; p.vel.y = 0; }
+                p.lastJumpTap = nowMs;
+            }
+            // look (sticks / keys; mouse for P1 is applied directly by events)
+            p.yaw -= inp.lookX * LOOK_SPEED * dt;
+            p.pitch = Math.max(-1.53, Math.min(1.53, p.pitch - inp.lookY * LOOK_SPEED * dt));
+            // desired horizontal velocity in yaw space: forward = (-sin yaw, -cos yaw),
+            // right = (cos yaw, -sin yaw); stick/keys give moveZ = -1 when pushing forward
+            let mx = Math.cos(p.yaw) * inp.moveX + Math.sin(p.yaw) * inp.moveZ;
+            let mz = -Math.sin(p.yaw) * inp.moveX + Math.cos(p.yaw) * inp.moveZ;
+            const mag = Math.hypot(mx, mz);
+            if (mag > 1) { mx /= mag; mz /= mag; }
+            const k = Math.min(1, (p.flying ? 10 : p.onGround ? 12 : 4) * dt);
+            const speedMul = p.flying ? 1.9 : 1;
+            p.vel.x += (mx * WALK * speedMul - p.vel.x) * k;
+            p.vel.z += (mz * WALK * speedMul - p.vel.z) * k;
+            if (p.flying) {
+                const targetVy = inp.jump ? 6.5 : inp.down ? -6.5 : 0;
+                p.vel.y += (targetVy - p.vel.y) * Math.min(1, 10 * dt);
+            } else {
+                p.vel.y -= GRAV * dt;
+                if (p.vel.y < -50) p.vel.y = -50;
+                if (inp.jump && p.onGround) {
+                    p.vel.y = JUMPV;
+                    if (worldMode === 'survival' && ++p.jumpN >= 10) { p.jumpN = 0; depleteFood(p, 2); }
+                }
+            }
+            moveAxis(p, 'x', p.vel.x * dt);
+            moveAxis(p, 'z', p.vel.z * dt);
+            p.onGround = false;
+            moveAxis(p, 'y', p.vel.y * dt);
+            // fall damage (survival): tracked from the highest airborne point
+            if (p.onGround) {
+                const fd = (p.fallPeak !== undefined ? p.fallPeak : p.pos.y) - p.pos.y;
+                if (!p.flying && worldMode === 'survival' && fd > 3.5) damagePlayer(p, Math.floor(fd - 3));
+                p.fallPeak = p.pos.y;
+                if (p.flying) p.flying = false;           // touched down: stop flying
+            } else {
+                p.fallPeak = Math.max(p.fallPeak !== undefined ? p.fallPeak : p.pos.y, p.pos.y);
+            }
+            // hunger: passive drain; regen only on a full-ish belly; empty belly starves
+            if (worldMode === 'survival') {
+                p.hungerT = (p.hungerT || 0) + dt;
+                if (p.hungerT >= 60) { p.hungerT = 0; depleteFood(p, 2); }  // 1 drumstick / minute idle
+                if (p.hunger >= 16 && p.health < 20) {                       // regen needs 8+ drumsticks
+                    p.regenT = (p.regenT || 0) + dt;
+                    if (p.regenT >= 4) { p.regenT = 0; p.health = Math.min(20, p.health + 1); updateHearts(); }
+                } else if (p.hunger <= 0) {                                  // starvation: down to half a heart
+                    p.starveT = (p.starveT || 0) + dt;
+                    if (p.starveT >= 4) {
+                        p.starveT = 0;
+                        if (p.health > 1) { p.health--; toast('P' + (p.idx + 1) + ' is starving!'); updateHearts(); }
+                    }
+                } else p.regenT = 0;
+            }
+            if (p.pos.y < -12) { // fell out of the world
+                if (worldMode === 'survival') damagePlayer(p, 20);
+                else { p.spawned = false; p.fallPeak = undefined; }
+            }
+        }
+        // Damage: red vignette flash instead of a text toast (hearts tell the story)
+        const hurtEl = document.getElementById('hurt');
+        let hurtTimer = 0;
+        function damagePlayer(p, n) {
+            if (worldMode !== 'survival' || n <= 0 || !p.spawned) return;
+            p.health -= n;
+            p.hurtT = 0.3;                                // mob knockback/flash window
+            hurtEl.style.opacity = Math.min(0.9, 0.35 + n * 0.12);
+            clearTimeout(hurtTimer);
+            hurtTimer = setTimeout(() => hurtEl.style.opacity = 0, 130);
+            if (p.health <= 0) {
+                p.health = 20;
+                p.hunger = 20; p.sat = 5;
+                p.spawned = false;                        // respawn at world spawn
+                p.vel.set(0, 0, 0);
+                p.fallPeak = undefined;
+                toast('P' + (p.idx + 1) + ' died — respawning (inventory kept)');
+            }
+            updateHearts();
+        }
+        // status HUD: 10 hearts + 10 drumsticks per player, half steps, survival only
+        function updateHearts() {
+            for (let i = 0; i < 2; i++) {
+                const hp = document.getElementById('hp' + (i + 1));
+                const hg = document.getElementById('hg' + (i + 1));
+                const show = worldActive && gameState !== 'title' && worldMode === 'survival' &&
+                             (i === 0 || splitMode);
+                hp.style.display = hg.style.display = show ? 'flex' : 'none';
+                if (!show) continue;
+                const p = players[i];
+                let html = '';
+                for (let j = 0; j < 10; j++) {
+                    const v = p.health - j * 2;
+                    html += '<span class="' + (v >= 2 ? 'full' : v >= 1 ? 'half' : 'empty') + '">♥</span>';
+                }
+                hp.innerHTML = html;
+                html = '';
+                for (let j = 0; j < 10; j++) {
+                    const v = p.hunger - j * 2;
+                    html += '<span class="' + (v >= 2 ? 'full' : v >= 1 ? 'half' : 'empty') + '">🍗</span>';
+                }
+                hg.innerHTML = html;
+            }
+        }
+
+        // =============================== RAYCAST ===============================
+        // Amanatides & Woo voxel DDA. Returns {x,y,z,face,id} or null.
+        function raycast(px, py, pz, dx, dy, dz, maxD) {
+            let x = Math.floor(px), y = Math.floor(py), z = Math.floor(pz);
+            const stepX = dx > 0 ? 1 : -1, stepY = dy > 0 ? 1 : -1, stepZ = dz > 0 ? 1 : -1;
+            const tdx = dx !== 0 ? Math.abs(1 / dx) : Infinity;
+            const tdy = dy !== 0 ? Math.abs(1 / dy) : Infinity;
+            const tdz = dz !== 0 ? Math.abs(1 / dz) : Infinity;
+            let tmx = dx !== 0 ? ((dx > 0 ? x + 1 - px : px - x) * tdx) : Infinity;
+            let tmy = dy !== 0 ? ((dy > 0 ? y + 1 - py : py - y) * tdy) : Infinity;
+            let tmz = dz !== 0 ? ((dz > 0 ? z + 1 - pz : pz - z) * tdz) : Infinity;
+            let face = null, t = 0;
+            for (let i = 0; i < 96; i++) {
+                const b = getBlock(x, y, z);
+                if (b === undefined) return null;        // unloaded: stop
+                if (b > 0) return { x, y, z, face, id: b };
+                if (tmx < tmy && tmx < tmz) { x += stepX; t = tmx; tmx += tdx; face = [-stepX, 0, 0]; }
+                else if (tmy < tmz)         { y += stepY; t = tmy; tmy += tdy; face = [0, -stepY, 0]; }
+                else                        { z += stepZ; t = tmz; tmz += tdz; face = [0, 0, -stepZ]; }
+                if (t > maxD) return null;
+            }
+            return null;
+        }
+
+        const _dir = new THREE.Vector3();
+        function eyeRay(p) {
+            _dir.set(0, 0, -1).applyEuler(new THREE.Euler(p.pitch, p.yaw, 0, 'YXZ'));
+            return raycast(p.pos.x, p.pos.y + EYE, p.pos.z, _dir.x, _dir.y, _dir.z, REACH);
+        }
+
+        function blockIntersectsPlayer(bx, by, bz, p) {
+            return !(p.pos.x - HW >= bx + 1 || p.pos.x + HW <= bx ||
+                     p.pos.y >= by + 1 || p.pos.y + PH <= by ||
+                     p.pos.z - HW >= bz + 1 || p.pos.z + HW <= bz);
+        }
+
+        // MC-style drops: stone drops cobblestone, ore blocks drop THEMSELVES (smelt
+        // them in a furnace) except coal/diamond/redstone which drop materials.
+        // Glass drops nothing. `in`-check so explicit nulls work.
+        const DROPS = { 1: 'dirt', 3: 'cobblestone', 13: 'coal', 16: 'diamond', 22: null, 24: 'redstone' };
+        // Tool REQUIREMENTS (MC "correct tool for drops"): mining these without the
+        // right tool class — or a high enough tier — destroys the block with no drop.
+        // Wood/dirt/sand/leaves have no requirement, so punching a tree still works.
+        const NEEDS_TOOL = {                       // blockId -> [toolKind, minTier]
+            3: ['pickaxe', 0], 9: ['pickaxe', 0], 10: ['pickaxe', 0], 11: ['pickaxe', 0],
+            19: ['pickaxe', 0], 21: ['pickaxe', 0], 22: ['pickaxe', 0],
+            13: ['pickaxe', 0],                    // coal: any pickaxe
+            14: ['pickaxe', 1], 24: ['pickaxe', 2], // iron needs stone+, redstone iron+
+            15: ['pickaxe', 2], 16: ['pickaxe', 2], // gold/diamond need iron+
+            20: ['pickaxe', 4]                      // obsidian: diamond only
+        };
+        function heldToolOf(p) {
+            const st = p.inv.hotbar[p.activeSlot];
+            const it = st ? ItemDB.get(st.id) : null;
+            return it && it.type === 'Tool' ? it : null;
+        }
+        function canHarvest(p, id) {
+            const req = NEEDS_TOOL[id];
+            if (!req) return true;
+            const it = heldToolOf(p);
+            return !!it && it.tool === req[0] && it.tier >= req[1];
+        }
+        function doBreak(p) {
+            const hit = p.target;
+            if (!hit) return;
+            const prev = getBlock(hit.x, hit.y, hit.z);
+            if (!prev || !setBlock(hit.x, hit.y, hit.z, 0, false)) return;
+            if (prev === 21) {                            // breaking a furnace returns its contents
+                const fk = hit.x + ',' + hit.y + ',' + hit.z;
+                const f = furnaces.get(fk);
+                if (f) {
+                    for (const sl of ['fIn', 'fFuel', 'fOut']) {
+                        const s2 = f.slots[sl][0];
+                        if (s2 && worldMode !== 'creative') p.inv.addItem(s2.id, s2.n);
+                    }
+                    furnaces.delete(fk);
+                    if (openFurnaceKey === fk) invUI.close();
+                }
+            }
+            if (worldMode === 'creative') return;         // creative: no drops, no tool wear
+            let itemId = (prev in DROPS) ? DROPS[prev] : ItemDB.byBlock[prev];
+            if (prev === 8) itemId = Math.random() < 0.05 ? 'apple' : (Math.random() < 0.7 ? 'leaves' : null);
+            if (!canHarvest(p, prev)) itemId = null;       // wrong/no tool: block is lost
+            if (itemId && p.inv.addItem(itemId, 1) > 0) toast('P' + (p.idx + 1) + ' inventory full');
+            if (++p.mineN >= 20) { p.mineN = 0; depleteFood(p, 2); }   // mining works up an appetite
+            // tool durability: every broken block wears the held tool; at 0 it shatters
+            const st = p.inv.hotbar[p.activeSlot];
+            const it = st ? ItemDB.get(st.id) : null;
+            if (it && it.type === 'Tool') {
+                if (st.dur === undefined) st.dur = it.dur;
+                if (--st.dur <= 0) { p.inv.hotbar[p.activeSlot] = null; toast(it.name + ' broke!'); }
+                p.inv.onChange();
+            }
+        }
+        const STONE_FAM = new Set([3, 9, 10, 11, 13, 14, 15, 16, 19, 21, 24]);
+        const WOOD_FAM = new Set([6, 7, 17, 18]);
+        const DIRT_FAM = new Set([1, 2, 4, 5, 12]);
+        // HOLD time (ms) to break a block: ~1s with the CORRECT tool (higher tiers
+        // shave it down), several seconds bare-handed on hard blocks. Creative: instant.
+        function breakTimeFor(p, id) {
+            if (worldMode === 'creative') return 60;
+            const st = p.inv.hotbar[p.activeSlot];
+            const it = st ? ItemDB.get(st.id) : null;
+            const tier = it && it.type === 'Tool' ? it.tier : 0;
+            const T = 1000 - (it && it.type === 'Tool' ? tier * 120 : 0);
+            const tool = t => it && it.tool === t;
+            if (id === 23) return 80;                                    // torch pops
+            if (id === 22) return 350;                                   // glass shatters fast
+            if (id === 20) return tool('pickaxe') && tier >= 4 ? 1200 : 10000; // obsidian needs diamond
+            if (STONE_FAM.has(id)) return tool('pickaxe') ? T : 3600;    // punching stone: 3.6s
+            if (WOOD_FAM.has(id)) return tool('axe') ? T : 2200;
+            if (DIRT_FAM.has(id)) return tool('shovel') ? Math.max(450, T - 400) : 1100;
+            if (id === 8) return tool('sword') ? 350 : 550;              // leaves
+            return 900;
+        }
+        function doPlace(p) {
+            const hit = p.target;
+            if (hit && hit.id === 17) { openCraftTable(p); return; } // use crafting table (MC right-click)
+            if (hit && hit.id === 21) { openFurnace(p, hit); return; } // use furnace
+            const st = p.inv.hotbar[p.activeSlot];   // "Active Item" = selected hotbar slot
+            if (!st) return;
+            const it = ItemDB.get(st.id);
+            if (it && it.type === 'Consumable') {    // hold right-click to eat (1.5s, animated)
+                if (worldMode === 'creative') { p.health = 20; return; }
+                if (!p.eating) p.eating = { id: st.id, t: 0 };
+                return;
+            }
+            if (!it || it.type !== 'Block') return;  // tools/armor don't place
+            if (!hit || !hit.face) return;
+            const bx = hit.x + hit.face[0], by = hit.y + hit.face[1], bz = hit.z + hit.face[2];
+            if (getBlock(bx, by, bz) !== 0) return;
+            for (const q of players) if (q.spawned && blockIntersectsPlayer(bx, by, bz, q)) return;
+            if (setBlock(bx, by, bz, it.blockId, false)) {
+                if (worldMode !== 'creative') {      // creative placing is free
+                    if (--st.n <= 0) p.inv.hotbar[p.activeSlot] = null;
+                    p.inv.onChange();
+                }
+            }
+        }
+
+        // Target highlight boxes — layered so each split-screen view only shows its
+        // OWN player's target (layer 2 renders in camera1 only, layer 1 in camera2 only)
+        const highlights = players.map((p, i) => {
+            const h = new THREE.LineSegments(
+                new THREE.EdgesGeometry(new THREE.BoxGeometry(1.002, 1.002, 1.002)),
+                new THREE.LineBasicMaterial({ color: 0x111111 }));
+            h.visible = false;
+            h.layers.set(i === 0 ? 2 : 1);
+            scene.add(h);
+            return h;
+        });
+
+        // ========================= FIRST-PERSON HAND ===========================
+        // Overlay pass (depth cleared, own camera) in single-view mode, animated
+        // with Minecraft's swing/equip/bob curves from ItemInHandRenderer.
+        const handScene = new THREE.Scene();
+        const handCamera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.05, 10);
+        const handHemi = new THREE.HemisphereLight(0xcfe5ff, 0x9a8464, 0.9);
+        const handDir = new THREE.DirectionalLight(0xfff3e0, 0.7);
+        handDir.position.set(0.6, 1.4, 0.8);
+        handScene.add(handHemi, handDir);
+
+        const texCache = new Map();
+        function tileTexture(name) { // crisp pixel-art textures shared by hand meshes
+            let t = texCache.get(name);
+            if (!t) {
+                t = new THREE.CanvasTexture(TexGen.tile(name));
+                t.magFilter = THREE.NearestFilter;
+                t.minFilter = THREE.NearestFilter;
+                t.generateMipmaps = false;
+                t.colorSpace = THREE.SRGBColorSpace;
+                texCache.set(name, t);
+            }
+            return t;
+        }
+        const HAND_TILES = { // blockId -> [top, side, bottom] tiles for the held cube
+            1: ['grass_top', 'grass_side', 'dirt'], 2: ['dirt', 'dirt', 'dirt'],
+            3: ['stone', 'stone', 'stone'], 4: ['sand', 'sand', 'sand'],
+            5: ['snow', 'snow', 'snow'], 6: ['plank', 'plank', 'plank'],
+            7: ['log_top', 'log_side', 'log_top'], 8: ['leaves', 'leaves', 'leaves'],
+            9: ['cobble', 'cobble', 'cobble'], 10: ['stonebrick', 'stonebrick', 'stonebrick'],
+            11: ['sandstone_top', 'sandstone_side', 'sandstone_top'], 12: ['gravel', 'gravel', 'gravel'],
+            13: ['coal_ore', 'coal_ore', 'coal_ore'], 14: ['iron_ore', 'iron_ore', 'iron_ore'],
+            15: ['gold_ore', 'gold_ore', 'gold_ore'], 16: ['diamond_ore', 'diamond_ore', 'diamond_ore'],
+            17: ['crafting_top', 'crafting_side', 'plank'], 18: ['plank', 'bookshelf', 'plank'],
+            19: ['mossy', 'mossy', 'mossy'], 20: ['obsidian', 'obsidian', 'obsidian'],
+            21: ['furnace_top', 'furnace_front', 'furnace_top'],
+            22: ['glass', 'glass', 'glass'], 24: ['redstone_ore', 'redstone_ore', 'redstone_ore']
+            // NOTE: 23 (torch) is deliberately absent — see SPRITE_BLOCKS below.
+        };
+        // Blocks that are held as a flat sprite instead of a cube (MC does this for
+        // torches). Without this a torch fell through to the stone cube fallback.
+        const SPRITE_BLOCKS = new Set([23]);
+        const handGroup = new THREE.Group();
+        handGroup.scale.setScalar(1);
+        handScene.add(handGroup);
+        // Arm rig, built FIST-FIRST: armGroup's origin IS the hand, and the limb runs
+        // down / right / toward the camera from there (forearm -> elbow -> upper arm).
+        // Anchoring at the fist is what fixes both the "arm points straight up" look
+        // and held items vanishing behind the arm mesh.
+        const armMat = new THREE.MeshLambertMaterial({ map: tileTexture('arm') });
+        const armGroup = new THREE.Group();
+        // 4px-wide Steve arm: ~0.12 world units (an 8px limb would be 0.25)
+        // Kept SHORT on purpose: at ~0.6 units from the hand camera anything longer
+        // than ~0.6 total spans the whole screen height (that was the giant beam).
+        const armFore = new THREE.Mesh(new THREE.BoxGeometry(0.10, 0.30, 0.10), armMat);  // hand -> elbow
+        armFore.geometry.translate(0, -0.15, 0);
+        const armUpper = new THREE.Mesh(new THREE.BoxGeometry(0.11, 0.30, 0.11), armMat); // elbow -> shoulder
+        armUpper.geometry.translate(0, -0.15, 0);
+        armUpper.position.y = -0.30;
+        armUpper.rotation.x = -0.55;                       // idle elbow bend
+        armFore.add(armUpper);
+        armGroup.add(armFore);
+        armGroup.rotation.set(-0.18, 0, 0.58);             // angles down-right, out of frame
+        const heldGroup = new THREE.Group();               // sits at the fist
+        handGroup.add(armGroup, heldGroup);
+
+        const hand = { swing: 1, equip: 1, bob: 0, swayX: 0, swayY: 0, prevYaw: 0, prevPitch: 0 };
+        let heldKey = null;
+        function triggerSwing() { hand.swing = 0; }
+        function rebuildHeld(item) {
+            for (const c of [...heldGroup.children]) {
+                heldGroup.remove(c);
+                if (c.geometry) c.geometry.dispose();
+                for (const m of Array.isArray(c.material) ? c.material : [c.material]) m.dispose();
+            }
+            armGroup.visible = true;                       // the arm always shows, MC-style
+            if (!item) return;
+            const asCube = item.type === 'Block' && !SPRITE_BLOCKS.has(item.blockId);
+            if (asCube) {                                  // MC: held block = 45deg-yawed mini cube
+                const t = HAND_TILES[item.blockId] || HAND_TILES[3];
+                const mats = [t[1], t[1], t[0], t[2], t[1], t[1]]
+                    .map(n => new THREE.MeshLambertMaterial({ map: tileTexture(n), alphaTest: 0.5 }));
+                const m = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.3, 0.3), mats);
+                m.position.set(-0.02, 0.1, 0.02);          // resting on the fist
+                m.rotation.set(0.1, Math.PI / 4, 0);
+                heldGroup.add(m);
+            } else {                                       // tools/food/torch: sprite in the fist
+                const m = new THREE.Mesh(
+                    new THREE.PlaneGeometry(0.26, 0.26),   // was 0.46 = half the screen
+                    new THREE.MeshLambertMaterial({ map: tileTexture(item.icon), transparent: true,
+                                                    alphaTest: 0.5, side: THREE.DoubleSide }));
+                m.position.set(-0.03, 0.09, 0.03);         // sits right at the fist
+                m.rotation.set(0, -0.3, -0.45);            // aligned along the forearm
+                heldGroup.add(m);
+            }
+        }
+        function updateHand(dt, p) {
+            const active = !splitMode && gameState === 'playing' && p.spawned;
+            handGroup.visible = active;
+            if (!active) return;
+            // The arm renders in its own pass with its own lights, so it has to be dimmed
+            // by hand to match the voxel light where the player is actually standing —
+            // otherwise the hand stays sunlit while you walk into a pitch-black cave.
+            const bx = Math.floor(p.pos.x), by = Math.floor(p.pos.y + EYE), bz = Math.floor(p.pos.z);
+            const localLit = Math.max(getSky(bx, by, bz) / 15 * lightUniforms.uSkyBright.value,
+                                      getBlk(bx, by, bz) / 15 * 0.92, 0.07);
+            handHemi.intensity = 0.2 + 0.9 * localLit;
+            handDir.intensity = 0.75 * localLit;
+
+            const st = p.inv.hotbar[p.activeSlot];
+            const item = st ? ItemDB.get(st.id) : null;
+            const key = item ? item.id : 'hand';
+            if (key !== heldKey) { heldKey = key; rebuildHeld(item); hand.equip = 0; } // re-equip dip
+            if (hand.swing < 1) hand.swing = Math.min(1, hand.swing + dt / 0.26);
+            if (hand.equip < 1) hand.equip = Math.min(1, hand.equip + dt / 0.3);
+            // Minecraft's swing: sqrt-eased arc out, sine arc back
+            const f = hand.swing, sq = Math.sqrt(f);
+            const swX = -0.32 * Math.sin(sq * Math.PI);
+            const swY = 0.2 * Math.sin(sq * Math.PI * 2);
+            const swZ = -0.2 * Math.sin(f * Math.PI);
+            const rotX = -Math.sin(sq * Math.PI) * 1.4;      // ~80 deg chop
+            const rotY = -Math.sin(f * f * Math.PI) * 0.35;  // ~20 deg inward
+            // walk bobbing (hand + camera), scaled by grounded speed
+            const speed = Math.hypot(p.vel.x, p.vel.z);
+            const sf = Math.min(1, speed / WALK) * (p.onGround ? 1 : 0.25) * (prefs.bob ? 1 : 0);
+            hand.bob += speed * dt * 1.7;
+            const bobX = Math.sin(hand.bob) * 0.033 * sf;
+            const bobY = -Math.abs(Math.cos(hand.bob)) * 0.04 * sf;
+            camera1.position.y -= Math.abs(Math.cos(hand.bob)) * 0.048 * sf;
+            camera1.rotation.z += Math.sin(hand.bob) * 0.006 * sf;
+            // look sway: the hand lags quick turns, then settles
+            const dy = p.yaw - hand.prevYaw, dpt = p.pitch - hand.prevPitch;
+            hand.prevYaw = p.yaw; hand.prevPitch = p.pitch;
+            hand.swayX = Math.max(-0.09, Math.min(0.09, hand.swayX - dy * 0.09)) * Math.max(0, 1 - dt * 9);
+            hand.swayY = Math.max(-0.09, Math.min(0.09, hand.swayY + dpt * 0.09)) * Math.max(0, 1 - dt * 9);
+            const drop = 1 - hand.equip;                     // equip: rise from below the frame
+            handGroup.position.set(
+                0.40 + swX * 0.8 + bobX + hand.swayX,
+                -0.32 + swY + bobY - drop * 0.6 + hand.swayY,
+                -0.58 + swZ);
+            handGroup.rotation.set(0.06 + rotX * 0.75, 0.22 + rotY, 0.06);
+            armUpper.rotation.x = -0.5 - Math.sin(sq * Math.PI) * 0.5; // elbow drives the swing
+            if (p.eating) {                                  // eating: food to the mouth, nibble wobble
+                const wob = Math.sin(p.eating.t * 22) * 0.02;
+                handGroup.position.set(0.24, -0.3 + wob, -0.48);
+                handGroup.rotation.set(0.5, 0.9, 0.15);
+            }
+        }
+
+        // Mining crack overlay per player: 4 stages + a shake that grows as the block
+        // gives way (layer-masked so each split view only sees its own).
+        const crackMats = [1, 2, 3, 4].map(n2 => new THREE.MeshBasicMaterial({
+            map: tileTexture('crack' + n2), transparent: true, depthWrite: false,
+            polygonOffset: true, polygonOffsetFactor: -2
+        }));
+        const crackGeo = new THREE.BoxGeometry(1.004, 1.004, 1.004);
+        const cracks = players.map((p, i) => {
+            const m2 = new THREE.Mesh(crackGeo, crackMats[0]);
+            m2.visible = false;
+            m2.layers.set(i === 0 ? 2 : 1);
+            scene.add(m2);
+            return m2;
+        });
+
+        // ================================ INPUT ================================
+        const inputs = [
+            { moveX: 0, moveZ: 0, lookX: 0, lookY: 0, jump: false, down: false, brk: false, place: false, cycle: 0 },
+            { moveX: 0, moveZ: 0, lookX: 0, lookY: 0, jump: false, down: false, brk: false, place: false, cycle: 0 }
+        ];
+        const DEADZONE = 0.16;
+        const dz = v => Math.abs(v) > DEADZONE ? v : 0;
+        const keys = new Set();
+        const mouse = { b0: false, b1: false, b2: false };
+
+        function pollGamepads() {
+            const padsRaw = navigator.getGamepads ? navigator.getGamepads() : [];
+            // Split-screen fix: map by CONNECTION ORDER, not raw index, so a controller
+            // that reconnects as index 1 (or 2) still drives Player 1.
+            const pads = [];
+            for (const g of padsRaw) if (g && g.connected) pads.push(g);
+            for (let i = 0; i < 2; i++) {
+                const inp = inputs[i];
+                inp.moveX = inp.moveZ = inp.lookX = inp.lookY = 0;
+                inp.jump = inp.down = inp.brk = inp.place = false;
+                inp.cycle = 0;
+            }
+            // Settings > Controllers assigns each connected pad to P1 / P2 / Off, so a
+            // lone controller can drive Player 2 without ever touching Player 1's input.
+            // MERGE (never overwrite): two pads mapped to the same player must not
+            // cancel each other out, and an idle pad must never zero another's input.
+            for (let k2 = 0; k2 < 2; k2++) {
+                const gp = pads[k2], target = prefs.padAssign[k2];
+                if (!gp || target < 0 || target > 1) { padPrev[k2].start = padPrev[k2].y = false; continue; }
+                const inp = inputs[target];
+                const mx2 = dz(gp.axes[0]), mz2 = dz(gp.axes[1]);
+                if (mx2 !== 0) inp.moveX = mx2;
+                if (mz2 !== 0) inp.moveZ = mz2;
+                const lx = dz(gp.axes[2]), ly = dz(gp.axes[3]);
+                if (lx !== 0) inp.lookX = lx * Math.abs(lx);
+                if (ly !== 0) inp.lookY = ly * Math.abs(ly);
+                const btn = n => gp.buttons[n] && (gp.buttons[n].value > 0.5 || gp.buttons[n].pressed);
+                inp.jump = inp.jump || btn(0);
+                inp.down = inp.down || btn(1);  // B / Circle: descend while flying
+                inp.brk = inp.brk || btn(7);
+                inp.place = inp.place || btn(6);
+                if (btn(15)) inp.cycle = 1;
+                if (btn(14)) inp.cycle = -1;
+                const start = btn(9), yBtn = btn(3);
+                if (start && !padPrev[k2].start) onStartButton(target); // START from a P2 pad = split
+                if (yBtn && !padPrev[k2].y && gameState === 'playing') toggleInventory(target);
+                padPrev[k2].start = start; padPrev[k2].y = yBtn;
+            }
+            // keyboard/mouse via CUSTOM BINDS (Settings > Keybinds)
+            const down = code => keys.has(code) || (code === 'Mouse0' && mouse.b0) ||
+                                 (code === 'Mouse1' && mouse.b1) || (code === 'Mouse2' && mouse.b2);
+            // keyboard merges on top of pads — same rule: only assert, never clear
+            const B1 = prefs.binds.p1, B2 = prefs.binds.p2;
+            const i0 = inputs[0], i1 = inputs[1];
+            if (down(B1.forward)) i0.moveZ = -1; if (down(B1.back)) i0.moveZ = 1;
+            if (down(B1.left)) i0.moveX = -1; if (down(B1.right)) i0.moveX = 1;
+            if (down(B1.jump)) i0.jump = true;
+            if (down(B1.down)) i0.down = true;
+            if (down(B1.dig)) i0.brk = true;
+            if (down(B1.place)) i0.place = true;
+            if (down(B2.forward)) i1.moveZ = -1; if (down(B2.back)) i1.moveZ = 1;
+            if (down(B2.left)) i1.moveX = -1; if (down(B2.right)) i1.moveX = 1;
+            if (down(B2.lookLeft)) i1.lookX = -1; if (down(B2.lookRight)) i1.lookX = 1;
+            if (down(B2.lookUp)) i1.lookY = -1; if (down(B2.lookDown)) i1.lookY = 1;
+            if (down(B2.jump)) i1.jump = true;
+            if (down(B2.down)) i1.down = true;
+            if (down(B2.dig)) i1.brk = true;
+            if (down(B2.place)) i1.place = true;
+        }
+
+        const typing = e => e.target && e.target.tagName === 'INPUT';
+        window.addEventListener('keydown', e => {
+            if (bindCapture) {                       // Settings: capturing a new keybind
+                e.preventDefault();
+                if (e.code !== 'Escape') {
+                    prefs.binds[bindCapture.pl][bindCapture.action] = e.code;
+                    savePrefs(); applyPrefs();
+                }
+                bindCapture = null;
+                renderBinds();
+                return;
+            }
+            if (e.code === 'Enter' && gameState === 'title') { startFromTitle(); return; }
+            if (typing(e)) return;
+            if (e.code === 'Escape') { onEscape(); return; }
+            keys.add(e.code);
+            if (gameState !== 'playing') return;
+            if (e.code === prefs.binds.p1.inventory) toggleInventory(0);
+            if (e.code === prefs.binds.p2.inventory) toggleInventory(1);
+            if (invOpenFor === null) {
+                if (e.code.startsWith('Digit')) {    // 1-9 select P1's active hotbar slot
+                    const d = +e.code.slice(5);
+                    if (d >= 1 && d <= 9) selectSlot(players[0], d - 1);
+                }
+                if (e.code === prefs.binds.p2.hotbar) cycleSel(players[1], 1);
+            }
+            if (boundCodes.has(e.code) || e.code === 'Space' || e.code.startsWith('Arrow')) e.preventDefault();
+        });
+        window.addEventListener('keyup', e => keys.delete(e.code));
+        window.addEventListener('blur', () => keys.clear());
+
+        // P1 mouse look via pointer lock
+        renderer.domElement.addEventListener('click', () => {
+            if (gameState !== 'playing' || invOpenFor !== null) return;
+            if (!document.pointerLockElement) renderer.domElement.requestPointerLock();
+        });
+        window.addEventListener('mousemove', e => {
+            if (document.pointerLockElement !== renderer.domElement) return;
+            const p = players[0];
+            p.yaw -= e.movementX * 0.0022 * prefs.sens;
+            p.pitch = Math.max(-1.53, Math.min(1.53, p.pitch - e.movementY * 0.0022 * prefs.sens));
+        });
+        window.addEventListener('mousedown', e => {
+            if (document.pointerLockElement !== renderer.domElement) return;
+            if (e.button === 0) mouse.b0 = true;
+            if (e.button === 1) mouse.b1 = true;
+            if (e.button === 2) mouse.b2 = true;
+        });
+        window.addEventListener('mouseup', e => {
+            if (e.button === 0) mouse.b0 = false;
+            if (e.button === 1) mouse.b1 = false;
+            if (e.button === 2) mouse.b2 = false;
+        });
+        window.addEventListener('contextmenu', e => e.preventDefault());
+        window.addEventListener('wheel', e => {
+            if (document.pointerLockElement === renderer.domElement)
+                cycleSel(players[0], e.deltaY > 0 ? 1 : -1);
+        });
+
+        function cycleSel(p, d) { p.activeSlot = (p.activeSlot + d + 9) % 9; renderHotbars(); }
+        function selectSlot(p, i) { p.activeSlot = i; renderHotbars(); }
+        function renderHotbars() {
+            InventoryUI.renderHotbar(document.getElementById('hb1'), players[0].inv, players[0].activeSlot);
+            InventoryUI.renderHotbar(document.getElementById('hb2'), players[1].inv, players[1].activeSlot);
+        }
+        renderHotbars();
+
+        // Hold-to-mine with visible progress (crack overlay), MC-style: releasing
+        // early resets the cracks and nothing drops. Use/place auto-repeats; food
+        // is a 1.5s hold-to-eat.
+        function handleActions(p, inp, now, dt) {
+            // attack swing: a fresh press first tries to hit a mob in reach
+            if (inp.brk && !p.prevBrk) {
+                if (p.idx === 0) triggerSwing();
+                if (tryAttackMob(p)) { p.prevBrk = inp.brk; p.mineKey = null; p.mineT = 0; return; }
+            }
+            p.prevBrk = inp.brk;
+            if (inp.brk && p.target) {
+                const k2 = p.target.x + ',' + p.target.y + ',' + p.target.z;
+                if (p.mineKey !== k2) { p.mineKey = k2; p.mineT = 0; p.mineDur = breakTimeFor(p, p.target.id); }
+                p.mineT += dt * 1000;
+                if (now - (p.lastSwing || 0) > 260) { p.lastSwing = now; if (p.idx === 0) triggerSwing(); }
+                if (p.mineT >= p.mineDur) { doBreak(p); p.mineKey = null; p.mineT = 0; }
+            } else { p.mineKey = null; p.mineT = 0; }
+            if (inp.place) {
+                if (p.eating) {
+                    p.eating.t += dt;
+                    const st = p.inv.hotbar[p.activeSlot];
+                    if (!st || st.id !== p.eating.id) p.eating = null;             // switched away: cancel
+                    else if (p.eating.t >= 1.5) { finishEating(p, st); p.eating = null; }
+                } else if (now - p.lastPlace > 230) {
+                    p.lastPlace = now;
+                    if (p.idx === 0) triggerSwing();
+                    doPlace(p);
+                }
+            } else { p.lastPlace = 0; p.eating = null; }                            // released: eating cancelled
+            if (inp.cycle !== 0) {
+                if (p.prevCycle === 0) cycleSel(p, inp.cycle);
+            }
+            p.prevCycle = inp.cycle;
+        }
+
+        // ================================ MOBS =================================
+        // Box-model entities sharing the player's AABB sweep. Pigs wander and flee
+        // when hit (drop raw porkchop); zombies spawn in the dark, chase, melee, and
+        // burn in daylight. Survival only; despawn beyond the load radius.
+        const mobs = [];
+        const MOB_DEF = {
+            pig:    { hp: 10, w: 0.45, h: 0.85, speed: 1.5, hostile: false, drop: 'raw_porkchop', dropN: [1, 2] },
+            zombie: { hp: 20, w: 0.3,  h: 1.8,  speed: 2.6, hostile: true,  drop: 'rotten_flesh', dropN: [0, 1],
+                      dmg: 3, reach: 1.5 }
+        };
+        const mobGeo = {};   // shared box geometries, built once per size key
+        function boxOf(w, h, d) {
+            const k2 = w + ':' + h + ':' + d;
+            return mobGeo[k2] || (mobGeo[k2] = new THREE.BoxGeometry(w, h, d));
+        }
+        function buildMobMesh(kind) {
+            const g = new THREE.Group();
+            const M = c => new THREE.MeshLambertMaterial({ color: c });
+            if (kind === 'pig') {
+                const pink = M(0xef9a9f), snout = M(0xd77f86);
+                const body = new THREE.Mesh(boxOf(0.62, 0.5, 0.9), pink);
+                body.position.y = 0.5;
+                const head = new THREE.Mesh(boxOf(0.42, 0.42, 0.36), pink);
+                head.position.set(0, 0.6, -0.6);
+                const nose = new THREE.Mesh(boxOf(0.18, 0.14, 0.08), snout);
+                nose.position.set(0, 0.54, -0.8);
+                g.add(body, head, nose);
+                for (const [dx, dz] of [[-0.2, -0.3], [0.2, -0.3], [-0.2, 0.3], [0.2, 0.3]]) {
+                    const leg = new THREE.Mesh(boxOf(0.16, 0.28, 0.16), pink);
+                    leg.geometry.translate(0, -0.14, 0);   // pivot at the hip
+                    leg.position.set(dx, 0.28, dz);
+                    g.add(leg);
+                    (g.userData.legs = g.userData.legs || []).push(leg);
+                }
+            } else {
+                const skin = M(0x4a7a4a), shirt = M(0x3b5b8f), pants = M(0x2f3f5f);
+                const body = new THREE.Mesh(boxOf(0.5, 0.7, 0.28), shirt);
+                body.position.y = 1.1;
+                const head = new THREE.Mesh(boxOf(0.44, 0.44, 0.44), skin);
+                head.position.y = 1.68;
+                g.add(body, head);
+                for (const dx of [-0.36, 0.36]) {          // arms out front, MC-style
+                    const arm = new THREE.Mesh(boxOf(0.2, 0.62, 0.2), skin);
+                    arm.geometry.translate(0, -0.31, 0);
+                    arm.position.set(dx, 1.42, -0.12);
+                    arm.rotation.x = -1.4;
+                    g.add(arm);
+                }
+                for (const dx of [-0.13, 0.13]) {
+                    const leg = new THREE.Mesh(boxOf(0.22, 0.75, 0.22), pants);
+                    leg.geometry.translate(0, -0.375, 0);
+                    leg.position.set(dx, 0.75, 0);
+                    g.add(leg);
+                    (g.userData.legs = g.userData.legs || []).push(leg);
+                }
+            }
+            g.traverse(o => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
+            scene.add(g);
+            return g;
+        }
+        function spawnMob(kind, x, y, z) {
+            const d = MOB_DEF[kind];
+            const m = {
+                kind, def: d, hp: d.hp,
+                pos: new THREE.Vector3(x, y, z), vel: new THREE.Vector3(),
+                yaw: Math.random() * Math.PI * 2, onGround: false,
+                mesh: buildMobMesh(kind), walk: 0, think: 0, wanderX: 0, wanderZ: 0,
+                target: null, atkCd: 0, hurtT: 0, burnT: 0
+            };
+            mobs.push(m);
+            return m;
+        }
+        function removeMob(i) {
+            const m = mobs[i];
+            scene.remove(m.mesh);
+            m.mesh.traverse(o => { if (o.material) o.material.dispose(); }); // geometry shared
+            mobs.splice(i, 1);
+        }
+        // mobs reuse the player's per-axis AABB sweep via a duck-typed body
+        function mobMove(m, axis, amt) {
+            const HWm = m.def.w, PHm = m.def.h;
+            if (amt === 0) return;
+            m.pos[axis] += amt;
+            const e = 0.001;
+            const x0 = Math.floor(m.pos.x - HWm), x1 = Math.floor(m.pos.x + HWm);
+            const y0 = Math.floor(m.pos.y), y1 = Math.floor(m.pos.y + PHm);
+            const z0 = Math.floor(m.pos.z - HWm), z1 = Math.floor(m.pos.z + HWm);
+            for (let by = y0; by <= y1; by++) for (let bz = z0; bz <= z1; bz++) for (let bx = x0; bx <= x1; bx++) {
+                if (!solidAt(bx, by, bz)) continue;
+                if (m.pos.x - HWm >= bx + 1 || m.pos.x + HWm <= bx ||
+                    m.pos.y >= by + 1 || m.pos.y + PHm <= by ||
+                    m.pos.z - HWm >= bz + 1 || m.pos.z + HWm <= bz) continue;
+                if (axis === 'x') { m.pos.x = amt > 0 ? bx - HWm - e : bx + 1 + HWm + e; m.vel.x = 0; m.blocked = true; }
+                else if (axis === 'z') { m.pos.z = amt > 0 ? bz - HWm - e : bz + 1 + HWm + e; m.vel.z = 0; m.blocked = true; }
+                else if (amt > 0) { m.pos.y = by - PHm - e; m.vel.y = 0; }
+                else { m.pos.y = by + 1 + e; m.vel.y = 0; m.onGround = true; }
+            }
+        }
+        function hurtMob(m, dmg, fromPos) {
+            m.hp -= dmg;
+            m.hurtT = 0.25;
+            if (fromPos) {                                  // knockback away from the hit
+                const dx = m.pos.x - fromPos.x, dz = m.pos.z - fromPos.z;
+                const L = Math.hypot(dx, dz) || 1;
+                m.vel.x += dx / L * 5; m.vel.z += dz / L * 5;
+                if (m.onGround) m.vel.y = 5;
+            }
+            if (m.kind === 'pig') { m.flee = 6; m.wanderX = m.vel.x; m.wanderZ = m.vel.z; }
+        }
+        function killMob(i, byPlayer) {
+            const m = mobs[i];
+            if (byPlayer && worldMode === 'survival') {
+                const [lo, hi] = m.def.dropN;
+                const n = lo + Math.floor(Math.random() * (hi - lo + 1));
+                if (n > 0) byPlayer.inv.addItem(m.def.drop, n);
+            }
+            removeMob(i);
+        }
+        const sunUp = () => { const tt = timeOfDay % 1; return tt > 0.02 && tt < 0.72; };
+        function updateMobs(dt) {
+            const nLocal = splitMode ? 2 : 1;
+            for (let i = mobs.length - 1; i >= 0; i--) {
+                const m = mobs[i], d = m.def;
+                // despawn far from every active player (keeps the sim bounded)
+                let near = Infinity;
+                for (let pi = 0; pi < nLocal; pi++) {
+                    const p = players[pi];
+                    if (p.spawned) near = Math.min(near, m.pos.distanceTo(p.pos));
+                }
+                if (near > LOAD_R * CS + 24) { removeMob(i); continue; }
+                if (m.hurtT > 0) m.hurtT -= dt;
+                m.think -= dt;
+                m.atkCd -= dt;
+                // --- AI ---
+                let tx = 0, tz = 0, want = 0;
+                m.target = null;
+                if (d.hostile) {
+                    let best = null, bd = 16;
+                    for (let pi = 0; pi < nLocal; pi++) {
+                        const p = players[pi];
+                        if (!p.spawned || worldMode !== 'survival') continue;
+                        const dd = m.pos.distanceTo(p.pos);
+                        if (dd < bd) { bd = dd; best = p; }
+                    }
+                    if (best) {
+                        m.target = best;
+                        tx = best.pos.x - m.pos.x; tz = best.pos.z - m.pos.z;
+                        want = 1;
+                        if (bd < d.reach && m.atkCd <= 0) {   // melee + knockback
+                            m.atkCd = 1.1;
+                            damagePlayer(best, d.dmg);
+                            const L = Math.hypot(tx, tz) || 1;
+                            best.vel.x += tx / L * 4.5; best.vel.z += tz / L * 4.5;
+                            if (best.onGround) best.vel.y = 4;
+                        }
+                    }
+                }
+                if (!m.target) {                              // wander / flee
+                    if (m.flee > 0) m.flee -= dt;
+                    if (m.think <= 0) {
+                        m.think = 1.5 + Math.random() * 2.5;
+                        if (Math.random() < 0.55 || m.flee > 0) {
+                            const a = Math.random() * Math.PI * 2;
+                            m.wanderX = Math.cos(a); m.wanderZ = Math.sin(a);
+                        } else { m.wanderX = 0; m.wanderZ = 0; }
+                    }
+                    tx = m.wanderX; tz = m.wanderZ;
+                    want = (tx || tz) ? (m.flee > 0 ? 1.6 : 0.55) : 0;
+                }
+                const L = Math.hypot(tx, tz);
+                const spd = d.speed * want;
+                if (L > 0.001 && want > 0) {
+                    m.vel.x += (tx / L * spd - m.vel.x) * Math.min(1, 8 * dt);
+                    m.vel.z += (tz / L * spd - m.vel.z) * Math.min(1, 8 * dt);
+                    m.yaw = Math.atan2(-tx, -tz);
+                } else {
+                    m.vel.x -= m.vel.x * Math.min(1, 8 * dt);
+                    m.vel.z -= m.vel.z * Math.min(1, 8 * dt);
+                }
+                m.vel.y -= GRAV * dt;
+                if (m.vel.y < -50) m.vel.y = -50;
+                m.blocked = false;
+                mobMove(m, 'x', m.vel.x * dt);
+                mobMove(m, 'z', m.vel.z * dt);
+                const wasGround = m.onGround;
+                m.onGround = false;
+                mobMove(m, 'y', m.vel.y * dt);
+                if (m.blocked && m.onGround && want > 0) m.vel.y = 7.4;  // auto-jump 1-block steps
+                if (m.pos.y < -8) { removeMob(i); continue; }
+                // zombies burn in daylight (skylight check: nothing solid overhead)
+                if (d.hostile && sunUp()) {
+                    let sky = true;
+                    for (let y2 = Math.ceil(m.pos.y + d.h); y2 < WORLD_H; y2++)
+                        if (solidAt(Math.floor(m.pos.x), y2, Math.floor(m.pos.z))) { sky = false; break; }
+                    if (sky) {
+                        m.burnT = (m.burnT || 0) + dt;
+                        if (m.burnT >= 1) { m.burnT = 0; m.hp -= 2; m.hurtT = 0.2; }
+                    }
+                }
+                if (m.hp <= 0) { killMob(i, null); continue; }
+                // --- render ---
+                const g = m.mesh;
+                g.position.set(m.pos.x, m.pos.y, m.pos.z);
+                g.rotation.y = m.yaw;
+                const sp = Math.hypot(m.vel.x, m.vel.z);
+                m.walk += sp * dt * 3.4;
+                if (g.userData.legs) {
+                    const sw = Math.sin(m.walk) * Math.min(0.7, sp * 0.28);
+                    g.userData.legs.forEach((leg, li) => { leg.rotation.x = li % 2 ? -sw : sw; });
+                }
+                const hurt = m.hurtT > 0;
+                g.traverse(o => { if (o.isMesh) o.material.emissive && o.material.emissive.setHex(hurt ? 0x662222 : 0x000000); });
+            }
+        }
+        // Spawning: pigs by day on grass, zombies at night in the dark. Caps keep
+        // the population sane; both scale with how many chunks are loaded.
+        let spawnT = 0;
+        function trySpawnMobs(dt) {
+            if (worldMode !== 'survival' || !worldActive) return;
+            spawnT -= dt;
+            if (spawnT > 0) return;
+            spawnT = 2.5;
+            const night = !sunUp();
+            let pigs = 0, zoms = 0;
+            for (const m of mobs) (m.def.hostile ? zoms++ : pigs++);
+            const p = players[0];
+            if (!p.spawned) return;
+            const wantZom = night ? 12 : 0;
+            const kind = (zoms < wantZom && night) ? 'zombie' : (pigs < 10 ? 'pig' : null);
+            if (!kind) return;
+            for (let att = 0; att < 12; att++) {
+                const a = Math.random() * Math.PI * 2;
+                const r = 18 + Math.random() * 26;          // ring around the player
+                const x = Math.floor(p.pos.x + Math.cos(a) * r) + 0.5;
+                const z = Math.floor(p.pos.z + Math.sin(a) * r) + 0.5;
+                for (let y = WORLD_H - 2; y > 2; y--) {
+                    const below = getBlock(Math.floor(x), y - 1, Math.floor(z));
+                    if (below === undefined) break;          // chunk not loaded
+                    if (below > 0 && getBlock(Math.floor(x), y, Math.floor(z)) === 0 &&
+                        getBlock(Math.floor(x), y + 1, Math.floor(z)) === 0) {
+                        if (kind === 'pig' && below !== 1) break;            // grass only
+                        if (kind === 'zombie' && Math.abs(y - p.pos.y) > 20) break;
+                        spawnMob(kind, x, y, z);
+                        return;
+                    }
+                }
+            }
+        }
+        function clearMobs() { for (let i = mobs.length - 1; i >= 0; i--) removeMob(i); }
+        // player attacks: the dig button also swings at mobs in reach
+        function tryAttackMob(p) {
+            if (worldMode !== 'survival') return false;
+            const dir = new THREE.Vector3(0, 0, -1).applyEuler(new THREE.Euler(p.pitch, p.yaw, 0, 'YXZ'));
+            const eye = new THREE.Vector3(p.pos.x, p.pos.y + EYE, p.pos.z);
+            let best = -1, bestT = 3.6;
+            for (let i = 0; i < mobs.length; i++) {
+                const m = mobs[i];
+                const c = new THREE.Vector3(m.pos.x, m.pos.y + m.def.h * 0.55, m.pos.z);
+                const to = c.clone().sub(eye);
+                const t = to.dot(dir);
+                if (t < 0 || t > bestT) continue;
+                const perp = to.clone().addScaledVector(dir, -t).length();
+                if (perp > m.def.w + 0.45) continue;
+                best = i; bestT = t;
+            }
+            if (best < 0) return false;
+            const it = heldToolOf(p);
+            const dmg = it && it.damage ? it.damage : 1;
+            hurtMob(mobs[best], dmg, p.pos);
+            if (mobs[best].hp <= 0) killMob(best, p);
+            return true;
+        }
+
+        // ============================== FURNACES ===============================
+        // Per-block "tile entities": keyed by world position, ticked while the world
+        // runs, persisted in the save's /furnaces file. 1 coal = 8 smelts, 10s each.
+        const furnaces = new Map();
+        let openFurnaceKey = null;
+        function furnaceAt(k2) {
+            let f = furnaces.get(k2);
+            if (!f) {
+                f = { slots: { fIn: [null], fFuel: [null], fOut: [null] }, burn: 0, burnMax: 0, prog: 0, _inId: null };
+                furnaces.set(k2, f);
+            }
+            return f;
+        }
+        function openFurnace(p, hit) {
+            if (p.idx > 0 && !splitMode) return;
+            if (invOpenFor !== null) invUI.close();
+            invOpenFor = p.idx;
+            openFurnaceKey = hit.x + ',' + hit.y + ',' + hit.z;
+            dockInvWrap(p.idx);
+            if (document.pointerLockElement) { expectUnlock = true; document.exitPointerLock(); }
+            invUI.open(p, 'Furnace', 'furnace', worldMode === 'creative', furnaceAt(openFurnaceKey));
+        }
+        function tickFurnaces(dt) {
+            for (const [, f] of furnaces) {
+                const inS = f.slots.fIn[0], outS = f.slots.fOut[0];
+                const res = inS ? Smelting.result(inS.id) : null;
+                if ((inS ? inS.id : null) !== f._inId) { f._inId = inS ? inS.id : null; f.prog = 0; }
+                const outFree = res && (!outS || (outS.id === res && outS.n < ItemDB.maxStack(res)));
+                let dirty = false;
+                if (f.burn > 0) f.burn = Math.max(0, f.burn - dt);
+                if (outFree) {
+                    if (f.burn <= 0) {                   // light a new piece of fuel
+                        const fu = f.slots.fFuel[0];
+                        const bt = fu ? Smelting.fuelTime(fu.id) : 0;
+                        if (bt > 0) {
+                            f.burnMax = f.burn = bt;
+                            if (--fu.n <= 0) f.slots.fFuel[0] = null;
+                            dirty = true;
+                        }
+                    }
+                    if (f.burn > 0) {
+                        f.prog += dt;
+                        if (f.prog >= Smelting.TIME) {   // one item done
+                            f.prog = 0;
+                            if (--inS.n <= 0) f.slots.fIn[0] = null;
+                            if (outS) outS.n++;
+                            else f.slots.fOut[0] = ItemDB.mk(res, 1);
+                            dirty = true;
+                        }
+                    } else f.prog = Math.max(0, f.prog - dt * 2);  // no fuel: progress decays
+                } else f.prog = Math.max(0, f.prog - dt * 2);
+                if (dirty && invUI.container === f) invUI.refresh();
+            }
+            if (invUI.mode === 'furnace' && invUI.player) invUI.updateBars();
+        }
+        const packStack = s => s ? (s.dur !== undefined ? [s.id, s.n, s.dur] : [s.id, s.n]) : 0;
+        const unpackStack = e => {
+            if (!e || !ItemDB.get(e[0])) return null;
+            const st = { id: e[0], n: e[1] };
+            if (e[2] !== undefined) st.dur = e[2];
+            return st;
+        };
+        const serializeFurnaces = () => [...furnaces].map(([k2, f]) => [k2, {
+            i: packStack(f.slots.fIn[0]), u: packStack(f.slots.fFuel[0]), o: packStack(f.slots.fOut[0]),
+            b: r2(f.burn), m: r2(f.burnMax), p: r2(f.prog)
+        }]);
+        function loadFurnaces(list) {
+            furnaces.clear();
+            openFurnaceKey = null;
+            if (!list) return;
+            for (const [k2, d] of list) furnaces.set(k2, {
+                slots: { fIn: [unpackStack(d.i)], fFuel: [unpackStack(d.u)], fOut: [unpackStack(d.o)] },
+                burn: d.b || 0, burnMax: d.m || 0, prog: d.p || 0, _inId: null
+            });
+        }
+        // hunger helpers (survival)
+        function depleteFood(p, n) {
+            if (worldMode !== 'survival') return;
+            const fromSat = Math.min(p.sat || 0, n);
+            p.sat = (p.sat || 0) - fromSat;
+            p.hunger = Math.max(0, p.hunger - (n - fromSat));
+            updateHearts();
+        }
+        function finishEating(p, st) {
+            const it = ItemDB.get(st.id);
+            const pts = it.heal || 4;
+            p.hunger = Math.min(20, p.hunger + pts);
+            p.sat = Math.min(p.hunger, (p.sat || 0) + pts * 0.6);
+            if (--st.n <= 0) p.inv.hotbar[p.activeSlot] = null;
+            p.inv.onChange();
+            toast('P' + (p.idx + 1) + ' ate ' + it.name);
+            updateHearts();
+        }
+
+        // ============================= MULTIPLAYER =============================
+        // VoxelNet (WebRTC DataChannels, PeerJS signaling) loads from net-module.js.
+        const net = (typeof VoxelNet !== 'undefined') ? new VoxelNet() : null;
+        const statusEl = document.getElementById('netStatus');
+        let sessionCode = null;
+
+        const remotes = new Map(); // peerId -> {groups:[g,g], t:[target,target], cur:[Vector3,Vector3]}
+        function peerColor(pid) {
+            let h = 0;
+            for (const c of pid) h = (h * 31 + c.charCodeAt(0)) | 0;
+            return new THREE.Color().setHSL(((h >>> 0) % 360) / 360, 0.65, 0.5);
+        }
+        function ensureRemote(pid) {
+            let r = remotes.get(pid);
+            if (!r) {
+                const col = peerColor(pid);
+                r = { groups: [makeAvatar(col, 0), makeAvatar(col, 0)], t: [null, null], cur: [null, null] };
+                r.groups.forEach(g => g.visible = false);
+                remotes.set(pid, r);
+            }
+            return r;
+        }
+        function removeRemote(pid) {
+            const r = remotes.get(pid);
+            if (!r) return;
+            for (const g of r.groups) {
+                scene.remove(g);
+                g.traverse(o => { if (o.material) o.material.dispose(); }); // geometries are shared
+            }
+            remotes.delete(pid);
+        }
+        function interpRemotes(dt) {
+            const k = Math.min(1, dt * 12);
+            for (const r of remotes.values()) for (let i = 0; i < 2; i++) {
+                const t = r.t[i];
+                if (!t) continue;
+                let c = r.cur[i];
+                if (!c) c = r.cur[i] = new THREE.Vector3(t.x, t.y, t.z);
+                c.x += (t.x - c.x) * k; c.y += (t.y - c.y) * k; c.z += (t.z - c.z) * k;
+                const g = r.groups[i];
+                g.visible = true;
+                g.position.copy(c);
+                g.rotation.y = t.yaw;
+            }
+        }
+
+        if (net) {
+            net.onStatus = s => { statusEl.textContent = (sessionCode ? 'code: ' + sessionCode + ' · ' : '') + s; };
+            net.onPeerJoin = pid => {
+                ensureRemote(pid);
+                if (net.isHost) net.sendWorld(pid, { seed: SEED, edits: serializeEdits(), mode: worldMode });
+            };
+            net.onPeerLeave = pid => removeRemote(pid);
+            net.onState = (pid, ps) => {
+                const r = ensureRemote(pid);
+                for (let i = 0; i < 2; i++) {
+                    const s = ps[i];
+                    if (s && Array.isArray(s.p)) {
+                        r.t[i] = { x: +s.p[0] || 0, y: +s.p[1] || 0, z: +s.p[2] || 0, yaw: +s.y || 0 };
+                    } else { r.t[i] = null; r.groups[i].visible = false; } // peer left split mode
+                }
+            };
+            net.onBlock = e => setBlock(e.x, e.y, e.z, e.id, true);
+            net.onWorld = w => {
+                if (w.mode) { worldMode = w.mode; updateModeButtons(); updateHearts(); } // host's rules
+                if (w.seed !== SEED) { resetWorld(w.seed, w.edits); return; }
+                // Same seed: merge the host's edit log, patch loaded chunks, remesh around them.
+                const affected = new Set();
+                for (const [k, list] of w.edits) {
+                    let m = editsByChunk.get(k);
+                    if (!m) { m = new Map(); editsByChunk.set(k, m); }
+                    for (const [li, id] of list) m.set(li, id);
+                    const ch = chunks.get(k);
+                    if (ch && ch.voxels) {
+                        for (const [li, id] of list) ch.voxels[li] = id;
+                        affected.add(k);
+                    }
+                }
+                for (const k of affected) {
+                    const [cx, cy, cz] = k.split(',').map(Number);
+                    requestRemesh(cx, cy, cz);
+                    requestRemesh(cx - 1, cy, cz); requestRemesh(cx + 1, cy, cz);
+                    requestRemesh(cx, cy - 1, cz); requestRemesh(cx, cy + 1, cz);
+                    requestRemesh(cx, cy, cz - 1); requestRemesh(cx, cy, cz + 1);
+                }
+            };
+        }
+
+        document.getElementById('hostBtn').onclick = async () => {
+            if (!net || typeof Peer === 'undefined') { statusEl.textContent = 'networking unavailable (offline or net-module.js missing)'; return; }
+            try {
+                sessionCode = null;
+                sessionCode = await net.host();
+                statusEl.textContent = 'code: ' + sessionCode + ' · share it!';
+            } catch (e) { /* onStatus already reported */ }
+        };
+        const joinInput = document.getElementById('joinCode');
+        document.getElementById('joinBtn').onclick = async () => {
+            if (!net || typeof Peer === 'undefined') { statusEl.textContent = 'networking unavailable (offline or net-module.js missing)'; return; }
+            try {
+                sessionCode = null;
+                await net.join(joinInput.value);
+                sessionCode = joinInput.value.trim().toLowerCase().replace(/^voxel-/, '');
+                joinInput.blur();
+            } catch (e) { /* onStatus already reported */ }
+        };
+        joinInput.addEventListener('keydown', e => { if (e.key === 'Enter') document.getElementById('joinBtn').onclick(); });
+
+        let lastNetSend = 0;
+        const r2 = v => Math.round(v * 100) / 100;
+        function netTick(now) {
+            if (!net || net.peerCount === 0) return;
+            if (now - lastNetSend < 66) return; // ~15 Hz
+            lastNetSend = now;
+            net.sendState(players.slice(0, splitMode ? 2 : 1).map(p => ({
+                p: [r2(p.pos.x), r2(p.pos.y), r2(p.pos.z)],
+                y: Math.round(p.yaw * 1000) / 1000
+            })));
+        }
+
+        // ========================= GAME STATE / MENUS ==========================
+        let gameState = 'title';           // 'title' | 'playing' | 'paused'
+        let invOpenFor = null;             // player idx with inventory open, or null
+        let worldName = 'World 1';
+        let timeOfDay = 0.08, totalPlayTime = 0;   // persisted in world metadata
+        const padPrev = [{ start: false, y: false }, { start: false, y: false }];
+        let splitMode = false;             // local split-screen toggle (persisted preference)
+        try { splitMode = localStorage.getItem('voxel/pref-split') === '1'; } catch (e) {}
+        let worldActive = false;           // a world is loaded (gates chunk streaming)
+        let worldMode = 'survival';        // 'survival' | 'creative' — per-world, saved in metadata
+        let newWorldMode = 'survival';     // mode picker for NEW worlds on the title screen
+        function updateModeButtons() {
+            document.getElementById('btnMode').textContent = 'New world: ' +
+                (newWorldMode === 'survival' ? 'Survival' : 'Creative');
+            document.getElementById('btnModeP').textContent = 'Mode: ' +
+                (worldMode === 'survival' ? 'Survival' : 'Creative');
+        }
+
+        // ---- user preferences: video, mouse, controller assignment, custom keybinds ----
+        const DEFAULT_BINDS = {
+            p1: { forward: 'KeyW', back: 'KeyS', left: 'KeyA', right: 'KeyD', jump: 'Space',
+                  down: 'ShiftLeft', dig: 'Mouse0', place: 'Mouse2', inventory: 'KeyE' },
+            p2: { forward: 'ArrowUp', back: 'ArrowDown', left: 'ArrowLeft', right: 'ArrowRight',
+                  lookUp: 'KeyI', lookDown: 'KeyK', lookLeft: 'KeyJ', lookRight: 'KeyL',
+                  jump: 'KeyN', down: 'ShiftRight', dig: 'KeyU', place: 'KeyO', inventory: 'KeyM', hotbar: 'KeyP' }
+        };
+        const prefs = { renderDist: 4, fov: 70, sens: 1.0, bob: true, shadows: true, padAssign: [0, 1],
+                        binds: { p1: { ...DEFAULT_BINDS.p1 }, p2: { ...DEFAULT_BINDS.p2 } } };
+        try {
+            const saved = JSON.parse(localStorage.getItem('voxel/prefs') || '{}');
+            const b = saved.binds || {};
+            Object.assign(prefs, saved);
+            prefs.binds = { p1: { ...DEFAULT_BINDS.p1, ...(b.p1 || {}) },
+                            p2: { ...DEFAULT_BINDS.p2, ...(b.p2 || {}) } };
+            if (!Array.isArray(prefs.padAssign) || prefs.padAssign.length !== 2) prefs.padAssign = [0, 1];
+        } catch (e) {}
+        function savePrefs() { try { localStorage.setItem('voxel/prefs', JSON.stringify(prefs)); } catch (e) {} }
+        let boundCodes = new Set();
+        function applyPrefs() {
+            LOAD_R = Math.max(2, Math.min(6, prefs.renderDist | 0));
+            scene.fog.near = Math.max(10, LOAD_R * 16 * 0.4);
+            scene.fog.far = LOAD_R * 16 - 6;
+            shadowsOn = prefs.shadows !== false;
+            if (dirLight.castShadow !== shadowsOn) {
+                dirLight.castShadow = shadowsOn;
+                chunkMaterial.needsUpdate = true;   // shadow chunks compile in/out
+            }
+            boundCodes = new Set([...Object.values(prefs.binds.p1), ...Object.values(prefs.binds.p2)]);
+            applyViewMode();
+            if (worldActive) updateChunks(true);
+            const $ = id => document.getElementById(id);
+            $('setDist').value = LOAD_R; $('setDistV').textContent = LOAD_R;
+            $('setFov').value = prefs.fov; $('setFovV').textContent = prefs.fov;
+            $('setSens').value = Math.round(prefs.sens * 100); $('setSensV').textContent = prefs.sens.toFixed(2);
+            $('setBob').checked = !!prefs.bob;
+            $('setShadow').checked = shadowsOn;
+            $('setPadA').value = String(prefs.padAssign[0]);
+            $('setPadB').value = String(prefs.padAssign[1]);
+        }
+
+        // ---- custom keybinds: click a binding, press any key or mouse button ----
+        const BIND_ACTIONS = {
+            p1: [['forward', 'Forward'], ['back', 'Back'], ['left', 'Left'], ['right', 'Right'],
+                 ['jump', 'Jump'], ['down', 'Descend (fly)'], ['dig', 'Dig / Attack'], ['place', 'Place / Use'], ['inventory', 'Inventory']],
+            p2: [['forward', 'Forward'], ['back', 'Back'], ['left', 'Left'], ['right', 'Right'],
+                 ['lookUp', 'Look Up'], ['lookDown', 'Look Down'], ['lookLeft', 'Look Left'], ['lookRight', 'Look Right'],
+                 ['jump', 'Jump'], ['down', 'Descend (fly)'], ['dig', 'Dig'], ['place', 'Place / Use'], ['inventory', 'Inventory'], ['hotbar', 'Hotbar Cycle']]
+        };
+        let bindCapture = null;
+        function keyLabel(code) {
+            if (!code) return '—';
+            const M = { Mouse0: 'LMB', Mouse1: 'MMB', Mouse2: 'RMB', Space: 'Space' };
+            return M[code] || code.replace(/^Key|^Digit/, '').replace(/^Arrow/, '');
+        }
+        function renderBinds() {
+            for (const pl of ['p1', 'p2']) {
+                const el = document.getElementById(pl === 'p1' ? 'bindsP1' : 'bindsP2');
+                el.innerHTML = BIND_ACTIONS[pl].map(([action, label]) => {
+                    const cap = bindCapture && bindCapture.pl === pl && bindCapture.action === action;
+                    return '<div class="bindRow"><span>' + label + '</span><button data-pl="' + pl +
+                        '" data-action="' + action + '">' + (cap ? 'press a key…' : keyLabel(prefs.binds[pl][action])) + '</button></div>';
+                }).join('');
+            }
+        }
+        function onBindClick(e) {
+            const b = e.target.closest('button');
+            if (!b) return;
+            bindCapture = { pl: b.dataset.pl, action: b.dataset.action };
+            renderBinds();
+        }
+        document.getElementById('bindsP1').addEventListener('click', onBindClick);
+        document.getElementById('bindsP2').addEventListener('click', onBindClick);
+        window.addEventListener('mousedown', e => {   // mouse buttons are bindable too
+            if (!bindCapture) return;
+            e.preventDefault();
+            e.stopPropagation();
+            prefs.binds[bindCapture.pl][bindCapture.action] = 'Mouse' + e.button;
+            savePrefs(); applyPrefs();
+            bindCapture = null;
+            renderBinds();
+        }, true);
+
+        let settingsFrom = 'title';
+        function openSettings() { settingsFrom = gameState === 'paused' ? 'paused' : 'title'; renderBinds(); setState('settings'); }
+        function closeSettings() { bindCapture = null; setState(settingsFrom); }
+        const bindInput = (id, fn) => document.getElementById(id).addEventListener('input', e => { fn(e.target); savePrefs(); applyPrefs(); });
+        bindInput('setDist', t => prefs.renderDist = +t.value);
+        bindInput('setFov', t => prefs.fov = +t.value);
+        bindInput('setSens', t => prefs.sens = +t.value / 100);
+        bindInput('setBob', t => prefs.bob = t.checked);
+        bindInput('setShadow', t => prefs.shadows = t.checked);
+        bindInput('setPadA', t => prefs.padAssign[0] = +t.value);
+        bindInput('setPadB', t => prefs.padAssign[1] = +t.value);
+        document.getElementById('btnSettingsBack').onclick = () => closeSettings();
+        document.getElementById('btnSettingsT').onclick = openSettings;
+        document.getElementById('btnSettingsP').onclick = openSettings;
+
+        const toastEl = document.getElementById('toast');
+        let toastTimer = 0;
+        function toast(msg) {
+            toastEl.textContent = msg;
+            toastEl.style.opacity = 1;
+            clearTimeout(toastTimer);
+            toastTimer = setTimeout(() => toastEl.style.opacity = 0, 1800);
+        }
+
+        function setState(s) {
+            gameState = s;
+            // classList (NOT className=) so the mode-single view class survives state
+            // changes — assigning className was wiping it and resurrecting the split HUD
+            const b = document.body.classList;
+            b.remove('st-title', 'st-playing', 'st-paused', 'st-settings');
+            b.add('st-' + s);
+            document.getElementById('title').classList.toggle('hidden', s !== 'title');
+            document.getElementById('pause').classList.toggle('hidden', s !== 'paused');
+            document.getElementById('settings').classList.toggle('hidden', s !== 'settings');
+        }
+
+        // ---- inventory UI (mouse-operated; open with E / M / gamepad Y) ----
+        InventoryUI.buildPanel(document.getElementById('invPanel'));
+        const invUI = new InventoryUI({
+            wrap: document.getElementById('invWrap'),
+            panel: document.getElementById('invPanel'),
+            cursorEl: document.getElementById('cursorItem'),
+            tipEl: document.getElementById('tooltip'),
+            onClose: () => {
+                invOpenFor = null;
+                const wrap = document.getElementById('invWrap');
+                wrap.classList.remove('half-left', 'half-right');
+            },
+            onToast: toast
+        });
+        players.forEach(p => p.inv.onChange = () => {
+            renderHotbars();
+            if (invUI.player === p) invUI.refresh();
+        });
+        let expectUnlock = false;
+        // In split-screen the panel docks over the OPENING player's half only
+        function dockInvWrap(i) {
+            const wrap = document.getElementById('invWrap');
+            wrap.classList.toggle('half-left', splitMode && i === 0);
+            wrap.classList.toggle('half-right', splitMode && i === 1);
+        }
+        function toggleInventory(i) {
+            if (i > 0 && !splitMode) return;               // P2 exists only in split mode
+            if (invOpenFor === i) { invUI.close(); return; }
+            if (invOpenFor !== null) invUI.close();
+            invOpenFor = i;
+            dockInvWrap(i);
+            if (document.pointerLockElement) { expectUnlock = true; document.exitPointerLock(); }
+            invUI.open(players[i], 'Player ' + (i + 1) + ' — Inventory', 'player', worldMode === 'creative');
+        }
+        function openCraftTable(p) {                       // right-clicked a crafting table block
+            if (p.idx > 0 && !splitMode) return;
+            if (invOpenFor !== null) invUI.close();
+            invOpenFor = p.idx;
+            dockInvWrap(p.idx);
+            if (document.pointerLockElement) { expectUnlock = true; document.exitPointerLock(); }
+            invUI.open(p, 'Crafting Table', 'table', worldMode === 'creative');
+        }
+        document.addEventListener('pointerlockchange', () => {
+            if (document.pointerLockElement === renderer.domElement) return;
+            if (expectUnlock) { expectUnlock = false; return; }
+            // Esc released the lock: browsers swallow that keydown, so pause from here
+            if (gameState === 'playing' && invOpenFor === null) openPause();
+        });
+
+        // ---- view mode: fullscreen single view <-> local split-screen ----
+        function applyViewMode() {
+            document.body.classList.toggle('mode-single', !splitMode);
+            const w = window.innerWidth, h = window.innerHeight;
+            renderer.setSize(w, h);
+            // split renders the world twice: trade a little resolution for frame rate
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, splitMode ? 1.5 : 2));
+            camera1.aspect = (splitMode ? w / 2 : w) / h;
+            camera1.fov = splitMode ? prefs.fov + 5 : prefs.fov; // Settings > field of view
+            camera1.updateProjectionMatrix();
+            camera2.aspect = (w / 2) / h;
+            camera2.updateProjectionMatrix();
+            handCamera.aspect = w / h;
+            handCamera.updateProjectionMatrix();
+            for (const el of document.querySelectorAll('.splitLabel'))
+                el.textContent = 'Split-screen: ' + (splitMode ? 'ON (2 local players)' : 'OFF (1 local player)');
+        }
+        function setSplit(v) {
+            if (splitMode !== v) {
+                splitMode = v;
+                try { localStorage.setItem('voxel/pref-split', v ? '1' : '0'); } catch (e) {}
+                if (!v) {
+                    if (invOpenFor === 1) invUI.close();
+                    players[1].spawned = false;            // P2 parks; inventory persists in saves
+                } else if (gameState !== 'title' && players[0].spawned) {
+                    players[1].restorePos = [players[0].pos.x + 1.5, players[0].pos.y + 1.2, players[0].pos.z];
+                    players[1].vel.set(0, 0, 0);           // P2 drops in next to P1
+                }
+            }
+            applyViewMode();
+        }
+
+        // ---- world persistence (SaveManager + DataSerializer, game-systems.js) ----
+        // Load sequence: 1) seed -> workers regrow terrain  2) saved chunk diff into
+        // editsByChunk BEFORE generation  3) players placed from player.save
+        // 4) inventories restored. Auto-saves quietly every 2 minutes.
+        const SAVE_BINARY = false; // false: readable JSON (dev) · true: compact binary (prod)
+        const saveMgr = new SaveManager({
+            binary: SAVE_BINARY,
+            onToast: toast,
+            getState: () => ({
+                meta: { worldName, seed: SEED, mode: worldMode, timeOfDay: r2(timeOfDay), weather: 'clear',
+                        totalPlayTime: Math.round(totalPlayTime), savedAt: Date.now() },
+                player: players.map(p => ({
+                    pos: [r2(p.pos.x), r2(p.pos.y), r2(p.pos.z)],
+                    yaw: r2(p.yaw), pitch: r2(p.pitch), health: p.health,
+                    hunger: p.hunger, sat: r2(p.sat || 0),
+                    activeSlot: p.activeSlot, inv: p.inv.serialize()
+                })),
+                chunks: serializeEdits(),
+                furnaces: serializeFurnaces()
+            })
+        });
+
+        function startGame(name, seed, data, mode) {
+            worldName = name;
+            SEED = seed;
+            worldMode = (data && data.meta && data.meta.mode) || mode || 'survival';
+            timeOfDay = data && data.meta ? (data.meta.timeOfDay || 0.08) : 0.08;
+            totalPlayTime = data && data.meta ? (data.meta.totalPlayTime || 0) : 0;
+            for (const [, ch] of chunks) if (ch.mesh) { scene.remove(ch.mesh); ch.mesh.geometry.dispose(); }
+            chunks.clear(); pendingGen.clear(); jobQueue.length = 0; editsByChunk.clear();
+            if (data) for (const [k, list] of data.chunks) {   // diff before generation
+                const m = new Map();
+                for (const [li, id] of list) m.set(li, id);
+                editsByChunk.set(k, m);
+            }
+            loadFurnaces(data ? data.furnaces : null);
+            clearMobs();                     // mobs are transient: respawn naturally
+            players.forEach((p, i) => {
+                // NEW world (no save data) => everything resets: inventory, health,
+                // hunger, hotbar. Nothing carries over from the previous world.
+                const d = data && data.player && data.player[i];
+                p.spawned = false; p.vel.set(0, 0, 0);
+                p.health = d ? d.health : 20;
+                p.hunger = d && d.hunger !== undefined ? d.hunger : 20;
+                p.sat = d && d.sat !== undefined ? d.sat : 5;
+                p.activeSlot = d ? d.activeSlot : 0;
+                p.inv.load(d ? d.inv : null);
+                p.restorePos = d ? d.pos.slice() : null;
+                if (d) { p.yaw = d.yaw; p.pitch = d.pitch; }
+                p.pos.set(8.5 + i * 3, WORLD_H + 4, 8.5);
+            });
+            players.forEach(p => {
+                p.flying = false; p.fallPeak = undefined; p.regenT = 0;
+                p.eating = null; p.mineKey = null; p.mineT = 0; p.jumpN = 0; p.mineN = 0; p.hungerT = 0;
+            });
+            worldActive = true;
+            setState('playing');
+            renderHotbars();
+            updateModeButtons();
+            updateHearts();
+            updateChunks(true);
+            saveMgr.startAutoSave(30000);   // autosave every 30 seconds
+            toast(data ? 'Loaded "' + name + '" (' + worldMode + ')' : 'Created "' + name + '" (' + worldMode + ')');
+        }
+        async function doSave(msg) {
+            await saveMgr.save();
+            toast(msg || 'Saved');
+        }
+        async function quitToTitle() {
+            await doSave('Saved "' + worldName + '"');
+            saveMgr.stopAutoSave();
+            if (invOpenFor !== null) invUI.close();
+            if (net) net.close();
+            for (const pid of [...remotes.keys()]) removeRemote(pid);
+            for (const [, ch] of chunks) if (ch.mesh) { scene.remove(ch.mesh); ch.mesh.geometry.dispose(); }
+            chunks.clear(); pendingGen.clear(); jobQueue.length = 0;
+            furnaces.clear(); openFurnaceKey = null;
+            clearMobs();
+            players.forEach(p => { p.spawned = false; p.avatar.visible = false; p.eating = null; p.mineKey = null; });
+            highlights.forEach(h => h.visible = false);
+            cracks.forEach(c => c.visible = false);
+            worldActive = false;
+            refreshWorldList();
+            setState('title');
+        }
+        function openPause() {
+            if (gameState !== 'playing') return;
+            if (invOpenFor !== null) invUI.close();
+            setState('paused');
+        }
+        function closePause() { if (gameState === 'paused') setState('playing'); }
+        function onEscape() {
+            if (gameState === 'settings') { closeSettings(); return; }
+            if (invOpenFor !== null) invUI.close();
+            else if (gameState === 'playing') openPause();
+            else if (gameState === 'paused') closePause();
+        }
+        function onStartButton(playerIdx) { // gamepad START: begin from title / toggle pause
+            if (gameState === 'title') {
+                if (playerIdx > 0 && !splitMode) setSplit(true); // a P2-assigned pad's START = split-screen
+                startFromTitle();
+            }
+            else if (gameState === 'settings') closeSettings();
+            else if (gameState === 'playing') openPause();
+            else closePause();
+        }
+
+        // ---- title screen ----
+        let selectedWorld = null;
+        function refreshWorldList() {
+            const list = saveMgr.listWorlds();
+            const el = document.getElementById('worldList');
+            el.innerHTML = list.length ? '' : '<div class="dim">no saved worlds yet — name one below</div>';
+            for (const w of list) {
+                const d = document.createElement('div');
+                d.className = 'world' + (selectedWorld === w.worldName ? ' sel' : '');
+                d.innerHTML = '<b>' + w.worldName + '</b><span class="dim"> · ' + (w.mode || 'survival') +
+                    ' · seed ' + w.seed + ' · ' + Math.round((w.totalPlayTime || 0) / 60) + ' min played</span>';
+                d.onclick = () => { selectedWorld = w.worldName; refreshWorldList(); };
+                d.ondblclick = () => startFromTitle();
+                el.appendChild(d);
+            }
+        }
+        function parseSeed(s) {
+            s = String(s || '').trim();
+            if (!s) return (Math.random() * 2147483647) | 0;
+            if (/^-?\d+$/.test(s)) return parseInt(s, 10) | 0;
+            let h = 0;
+            for (const c of s) h = (Math.imul(h, 31) + c.charCodeAt(0)) | 0;
+            return h;
+        }
+        function startFromTitle() {
+            if (selectedWorld && saveMgr.exists(selectedWorld)) {
+                const data = saveMgr.load(selectedWorld);
+                startGame(selectedWorld, data.meta ? data.meta.seed : 1337, data);
+            } else newWorldFromInputs();
+        }
+        /** Next unused "World N" so a fresh world never silently reopens an old one. */
+        function nextFreeName(base) {
+            if (!saveMgr.exists(base)) return base;
+            const m = base.match(/^(.*?)(\d+)$/);           // "World 1" -> "World", 1
+            const stem = (m ? m[1] : base + ' ').replace(/\s+$/, ' ');
+            let n = m ? +m[2] + 1 : 2;
+            while (saveMgr.exists(stem + n) && n < 999) n++;
+            return stem + n;
+        }
+        // "Create & Play" ALWAYS makes a brand-new world (fresh terrain + empty
+        // inventory). Reopening an existing world is what "Play Selected" is for.
+        function newWorldFromInputs() {
+            const typed = (document.getElementById('wName').value.trim() || 'World 1').slice(0, 24);
+            const name = nextFreeName(typed);
+            if (name !== typed) toast('"' + typed + '" exists — created "' + name + '"');
+            selectedWorld = null;                            // don't let a selection win later
+            startGame(name, parseSeed(document.getElementById('wSeed').value), null, newWorldMode);
+            document.getElementById('wName').value = nextFreeName(name);
+            document.getElementById('wSeed').value = '';
+        }
+        document.getElementById('btnMode').onclick = () => {
+            newWorldMode = newWorldMode === 'survival' ? 'creative' : 'survival';
+            updateModeButtons();
+        };
+        document.getElementById('btnModeP').onclick = () => { // live switch (like /gamemode)
+            worldMode = worldMode === 'survival' ? 'creative' : 'survival';
+            players.forEach(p => { p.flying = false; p.fallPeak = p.pos.y; });
+            updateModeButtons();
+            updateHearts();
+            toast('Game mode: ' + worldMode);
+        };
+        document.getElementById('btnNew').onclick = newWorldFromInputs;
+        document.getElementById('btnPlay').onclick = startFromTitle;
+        document.getElementById('btnDelete').onclick = () => {
+            if (selectedWorld) { saveMgr.deleteWorld(selectedWorld); selectedWorld = null; refreshWorldList(); }
+        };
+        document.getElementById('btnResume').onclick = closePause;
+        document.getElementById('btnSave').onclick = () => doSave();
+        document.getElementById('btnQuit').onclick = quitToTitle;
+
+        // ---- day/night cycle: traveling warm sun + dawn/dusk tint (richer shading) ----
+        const skyDay = new THREE.Color(0x87ceeb), skyNight = new THREE.Color(0x0d1528);
+        const skyDawn = new THREE.Color(0xff9a5c);
+        const sunNoon = new THREE.Color(0xfff3e0), sunLow = new THREE.Color(0xffb066);
+        const skyCur = new THREE.Color(0x87ceeb);
+        scene.background = skyCur;
+        function updateSky() {
+            // asymmetric 20-min cycle: 15 min of day (t 0-.75), 5 min of night
+            const tt = timeOfDay % 1;
+            const a = tt < 0.75 ? (tt / 0.75) * Math.PI : Math.PI + ((tt - 0.75) / 0.25) * Math.PI;
+            const sunH = Math.sin(a);                       // sun elevation -1..1
+            const day = Math.max(0, Math.min(1, (sunH + 0.12) / 0.32));
+            const dawn = Math.max(0, 1 - Math.abs(sunH) / 0.28); // near-horizon glow
+            skyCur.copy(skyNight).lerp(skyDay, day).lerp(skyDawn, dawn * 0.4);
+            scene.fog.color.copy(skyCur);
+            hemiLight.intensity = 0.16 + 0.6 * day;
+            dirLight.intensity = 0.12 + 0.85 * Math.max(0, sunH);
+            dirLight.color.copy(sunLow).lerp(sunNoon, Math.min(1, Math.max(0, sunH) * 2.2));
+            dirLight.position.set(Math.cos(a) * 100, Math.sin(a) * 140 + 10, 45); // sun travels
+            // Baked skylight is a static "can the sky see this?" mask; this scalar is what
+            // turns it into an actual day/night swing without re-meshing a single chunk.
+            lightUniforms.uSkyBright.value = 0.12 + 0.88 * day;
+            handHemi.intensity = hemiLight.intensity + 0.2; // hand pass mirrors world light
+            handDir.intensity = dirLight.intensity * 0.75;
+            handDir.color.copy(dirLight.color);
+        }
+
+        // ============================== MAIN LOOP ==============================
+        const statsEl = document.getElementById('stats');
+        let last = performance.now(), acc = 0;
+        let frames = 0, fpsTimer = 0, fps = 0, lastCalls = 0, lastTris = 0;
+
+        function updateHUD() {
+            const heap = performance.memory ? (performance.memory.usedJSHeapSize / 1048576).toFixed(0) + 'MB' : 'n/a';
+            const avgGen = perf.genCount ? (perf.genMs / perf.genCount).toFixed(1) : '-';
+            statsEl.textContent =
+                'fps ' + fps + ' | draws ' + lastCalls + ' | tris ' + (lastTris / 1000).toFixed(0) + 'k' +
+                ' | chunks ' + chunks.size + ' (queue ' + jobQueue.length + ', gen avg ' + avgGen + 'ms)' +
+                ' | heap ' + heap + ' | mobs ' + mobs.length +
+                ' | peers ' + (net ? net.peerCount : 0) + ' | ' + worldMode;
+            updateHearts();
+        }
+
+        function animate(now) {
+            requestAnimationFrame(animate);
+            const dt = Math.min((now - last) / 1000, 0.1);
+            last = now;
+            acc += dt;
+            pollGamepads();
+
+            if (gameState === 'playing') {
+                for (let i = 0; i < 2; i++) if (invOpenFor === i) { // inventory open: freeze inputs
+                    const inp = inputs[i];
+                    inp.moveX = inp.moveZ = inp.lookX = inp.lookY = 0;
+                    inp.jump = inp.down = inp.brk = inp.place = false;
+                    inp.cycle = 0;
+                }
+                const nLocal = splitMode ? 2 : 1;
+                let steps = 0;
+                while (acc >= STEP && steps < 6) { // fixed-timestep physics, active players only
+                    for (let i = 0; i < nLocal; i++) stepPlayer(players[i], STEP, inputs[i]);
+                    acc -= STEP;
+                    steps++;
+                }
+                if (steps === 6) acc = 0; // spiral-of-death guard
+                timeOfDay = (timeOfDay + dt / DAY_LEN) % 1;
+                totalPlayTime += dt;
+            } else acc = 0; // paused / title: drop time instead of simulating it
+
+            updateSky();
+
+            const tnow = performance.now();
+            for (let i = 0; i < 2; i++) {
+                const p = players[i];
+                if (i > 0 && !splitMode) {
+                    highlights[i].visible = false; cracks[i].visible = false; p.avatar.visible = false;
+                    continue;
+                }
+                p.target = (p.spawned && gameState === 'playing') ? eyeRay(p) : null;
+                if (p.spawned && gameState === 'playing' && invOpenFor !== i) handleActions(p, inputs[i], tnow, dt);
+                else { p.mineKey = null; p.mineT = 0; p.eating = null; }
+                const h = highlights[i];
+                if (p.target) {
+                    h.position.set(p.target.x + 0.5, p.target.y + 0.5, p.target.z + 0.5);
+                    h.visible = true;
+                } else h.visible = false;
+                const cr = cracks[i];       // crack stages + shake while mining
+                if (p.mineKey && p.target && p.mineT > 50 && worldMode !== 'creative') {
+                    const stg = Math.min(3, (p.mineT / p.mineDur * 4) | 0);
+                    cr.material = crackMats[stg];
+                    const sh = (p.mineT / p.mineDur) * 0.022;
+                    cr.position.set(p.target.x + 0.5 + (Math.random() - 0.5) * sh,
+                                    p.target.y + 0.5 + (Math.random() - 0.5) * sh,
+                                    p.target.z + 0.5 + (Math.random() - 0.5) * sh);
+                    cr.visible = true;
+                    h.position.copy(cr.position);
+                } else cr.visible = false;
+                p.avatar.position.copy(p.pos);
+                p.avatar.rotation.y = p.yaw;
+                p.avatar.visible = p.spawned;
+                p.cam.position.set(p.pos.x, p.pos.y + EYE, p.pos.z);
+                p.cam.rotation.set(p.pitch, p.yaw, 0);
+            }
+
+            if (worldActive) { updateChunks(false); lightTick(); }
+            if (gameState === 'playing') {
+                tickFurnaces(dt);
+                updateMobs(dt);
+                trySpawnMobs(dt);
+            }
+            netTick(now);
+            interpRemotes(dt);
+
+            updateHand(dt, players[0]);       // first-person arm (single-view mode)
+
+            renderer.info.reset();
+            // Sun shadows: re-centre the box on the view we're rendering, then let the
+            // shadow map refresh exactly once even though split-screen renders twice.
+            if (shadowsOn && worldActive) {
+                // split-screen: aim at the midpoint so both views get shadows
+                updateShadowCamera(splitMode && players[1].spawned
+                    ? { pos: players[0].pos.clone().add(players[1].pos).multiplyScalar(0.5) }
+                    : players[0]);
+                scene.updateMatrixWorld();
+                renderer.shadowMap.needsUpdate = true;
+            } else scene.updateMatrixWorld();  // once per frame, shared by both passes
+            renderer.clear();
+            const w = window.innerWidth, hgt = window.innerHeight;
+            if (splitMode) {                  // scissored split-screen, per the starter
+                renderer.setScissorTest(true);
+                renderer.setViewport(0, 0, w / 2, hgt);
+                renderer.setScissor(0, 0, w / 2, hgt);
+                renderer.render(scene, camera1);
+                renderer.setViewport(w / 2, 0, w / 2, hgt);
+                renderer.setScissor(w / 2, 0, w / 2, hgt);
+                renderer.render(scene, camera2);
+                renderer.setScissorTest(false);
+            } else {                          // fullscreen + depth-cleared hand overlay
+                renderer.setViewport(0, 0, w, hgt);
+                renderer.render(scene, camera1);
+                renderer.clearDepth();        // the arm never clips into world geometry
+                renderer.render(handScene, handCamera);
+            }
+            lastCalls = renderer.info.render.calls;
+            lastTris = renderer.info.render.triangles;
+
+            frames++;
+            fpsTimer += dt;
+            if (fpsTimer >= 0.5) {
+                fps = Math.round(frames / fpsTimer);
+                frames = 0; fpsTimer = 0;
+                updateHUD();
+            }
+        }
+
+        window.addEventListener('resize', applyViewMode);
+
+        document.getElementById('btnSplit').onclick = () => setSplit(!splitMode);
+        document.getElementById('btnSplitP').onclick = () => setSplit(!splitMode);
+
+        refreshWorldList();          // boot into the title screen; START/Enter begins
+        renderBinds();
+        applyPrefs();                // render distance, fov, binds, view mode
+        updateModeButtons();
+        setState('title');
+        requestAnimationFrame(animate);
+    </script>
+</body>
+</html>
