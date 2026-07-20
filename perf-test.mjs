@@ -176,8 +176,13 @@ console.log('  draw calls          : <= ' + results.filter(r => r.position.byteL
 check('avg gen+mesh < 12 ms/chunk (async in workers regardless)', avg < 12, avg.toFixed(2) + ' ms');
 check('hidden-face culling >= 85%', culled >= 85, culled.toFixed(1) + '%');
 check('buffer memory <= 120 KB/chunk avg (incl. UVs)', bytes / jobs.length <= 122880, Math.round(bytes / jobs.length / 1024) + ' KB');
-check('all chunks non-degenerate (index = 6/4 * verts)', results.every(r =>
-    (r.index.byteLength / 4) === (r.position.byteLength / 12) * 1.5));
+// Cube and torch faces are 4 verts / 6 indices; plant cross-sprites are drawn
+// double-sided, so they are 4 verts / 12 indices. The ratio therefore sits between
+// 1.5 and 3.0, and must still be a whole number of triangles.
+check('all chunks non-degenerate (indices are whole triangles, 1.5-3x verts)', results.every(r => {
+    const idxN = r.index.byteLength / 4, vN = r.position.byteLength / 12;
+    return idxN % 3 === 0 && vN % 4 === 0 && idxN >= vN * 1.5 && idxN <= vN * 3;
+}));
 check('uv attribute consistent (2 floats per vertex, atlas range)', results.every(r => {
     if (r.uv.byteLength / 8 !== r.position.byteLength / 12) return false;
     const u = new Float32Array(r.uv);

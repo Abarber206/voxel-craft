@@ -211,11 +211,24 @@
         <div class="setCols">
             <div class="setCol">
                 <h3>Video</h3>
-                <div class="setRow"><label>Render distance (chunks)</label><input id="setDist" type="range" min="2" max="6" step="1"><span id="setDistV"></span></div>
+                <div class="setRow"><label>Graphics preset</label><select id="setPreset">
+                    <option value="low">Low — fastest</option>
+                    <option value="medium">Medium</option>
+                    <option value="high">High</option>
+                    <option value="ultra">Ultra — needs a strong GPU</option>
+                    <option value="custom">Custom</option>
+                </select></div>
+                <div class="setRow"><label>Render distance (chunks)</label><input id="setDist" type="range" min="2" max="12" step="1"><span id="setDistV"></span></div>
                 <div class="setRow"><label>Field of view</label><input id="setFov" type="range" min="60" max="90" step="1"><span id="setFovV"></span></div>
                 <div class="setRow"><label>Mouse sensitivity</label><input id="setSens" type="range" min="30" max="200" step="5"><span id="setSensV"></span></div>
                 <div class="setRow"><label>View bobbing</label><input id="setBob" type="checkbox"></div>
                 <div class="setRow"><label>Sun shadows</label><input id="setShadow" type="checkbox"></div>
+                <div class="setRow"><label>Shadow distance (blocks)</label><input id="setShadowD" type="range" min="16" max="128" step="8"><span id="setShadowDV"></span></div>
+                <div class="setRow"><label>Shadow quality</label><select id="setShadowQ">
+                    <option value="1024">Low (1024)</option>
+                    <option value="2048">Medium (2048)</option>
+                    <option value="4096">High (4096)</option>
+                </select></div>
                 <h3>Controllers</h3>
                 <div class="setRow"><label>Controller A drives</label><select id="setPadA"><option value="0">Player 1</option><option value="1">Player 2</option><option value="-1">Off</option></select></div>
                 <div class="setRow"><label>Controller B drives</label><select id="setPadB"><option value="0">Player 1</option><option value="1">Player 2</option><option value="-1">Off</option></select></div>
@@ -255,6 +268,7 @@
         let   SEED = 1337;             // deterministic shared default; host's seed wins on join
 
         const GRAV = 27, JUMPV = 8.6, WALK = 4.6, EYE = 1.62, HW = 0.3, PH = 1.8;
+        const SPRINT = 1.42;           // sprint speed multiplier (MC is ~1.3x walk)
         const LOOK_SPEED = 2.6, REACH = 6, STEP = 1 / 60;
         const DAY_LEN = 1200; // 20-minute cycle: 15 min day, 5 min night
 
@@ -345,17 +359,62 @@
             // ---- Terrain: deterministic f(x,y,z,seed). 3D density -> overhangs; 3D noise caves.
             // Rolling base + a ridged mountain term: sparse steep peaks that climb past
             // the snow line (y80+) toward full snow cover (y95+).
+            // Terrain shaping. The old version summed three octaves of roughly equal
+            // weight at every point, so EVERY square metre of the world was a hump --
+            // no flat ground anywhere and no real mountains either, just noise.
+            //
+            // This version separates the two jobs:
+            //   * `flat`  a very low-frequency mask that decides where the world is
+            //             calm. Most of the map sits in a plains band, and the detail
+            //             octaves are multiplied by this, so plains stay genuinely flat
+            //             instead of being gently corrugated.
+            //   * `ridge` a rare, sharply-thresholded mask that raises actual mountains.
+            //             Because the threshold is high the peaks are uncommon, and
+            //             because the exponent is high they rise steeply once they do.
             function heightAt(n, x, z) {
-                const base = 42 + 15 * (n.noise3(x * 0.010, 7.7, z * 0.010) * 0.62 +
-                                        n.noise3(x * 0.030, 3.1, z * 0.030) * 0.26 +
-                                        n.noise3(x * 0.085, 11.3, z * 0.085) * 0.12);
-                const rn = n.noise3(x * 0.0038, 3.3, z * 0.0038) * 0.65 +
-                           n.noise3(x * 0.009, 9.9, z * 0.009) * 0.35;
-                const ridge = Math.max(0, rn - 0.32);
-                return Math.min(WH - 8, base + Math.pow(ridge, 1.55) * 130);
+                // where is the land calm? 0 = flat plain, 1 = full hill detail
+                const cont = n.noise3(x * 0.0016, 21.4, z * 0.0016);          // continent-scale
+                const relief = Math.min(1, Math.max(0, 0.30 + cont * 1.15));
+                // A soft always-on roll so plains breathe instead of being a pancake,
+                // then the real hill octaves on top, scaled away on the calm ground.
+                const gentle = n.noise3(x * 0.0060, 31.2, z * 0.0060) * 2.6;
+                const hills = n.noise3(x * 0.0125, 7.7, z * 0.0125) * 0.70 +
+                              n.noise3(x * 0.0320, 3.1, z * 0.0320) * 0.22 +
+                              n.noise3(x * 0.0900, 11.3, z * 0.0900) * 0.08;
+                const base = 41 + gentle + hills * 19 * relief;
+                // Mountains: uncommon but findable, and steep once they start. The
+                // threshold sets how much of the map is mountainous, the exponent sets
+                // how abruptly they rise out of the surrounding hills.
+                // x1.8 because raw simplex clusters tightly around 0 — without widening
+                // it first, any threshold high enough to keep mountains rare made them
+                // vanish almost entirely (0.05% of the map, i.e. never found in play).
+                const rn = (n.noise3(x * 0.0030, 3.3, z * 0.0030) * 0.72 +
+                            n.noise3(x * 0.0080, 9.9, z * 0.0080) * 0.28) * 1.8;
+                const ridge = Math.min(1, Math.max(0, (rn - 0.15) / 0.85));
+                const peak = Math.pow(ridge, 1.35) * 66 * (0.30 + 0.70 * relief);
+                return Math.min(WH - 8, base + peak);
             }
+            // The 3D term is what carves overhangs. Scaling it by depth keeps the
+            // surface itself smooth and saves the drama for underground.
             function density(n, x, y, z, h) {
-                return (h - y) + 6 * n.noise3(x * 0.055, y * 0.055, z * 0.055);
+                const depth = (h - y) / 10;
+                // Above the surface the 3D term is weighted to zero anyway, so skip the
+                // noise entirely. Most of a tall world is sky, which made this the single
+                // hottest call in generation.
+                if (depth <= 0) return h - y;
+                return (h - y) + 5.5 * Math.min(1, depth) * n.noise3(x * 0.055, y * 0.055, z * 0.055);
+            }
+            // Cave field, kept underground. The old rule ran the same threshold at every
+            // height, so cave systems chewed straight through the surface and left the
+            // world pocked with holes. Fading the carve out over the top ~14 blocks means
+            // caves still reach daylight occasionally -- as entrances, not craters.
+            function caveAt(n, x, y, z, h) {
+                if (y <= 1) return false;
+                const cover = h - y;
+                if (cover < 4) return false;                       // never break the surface
+                const fade = Math.min(1, (cover - 4) / 14);        // 0 at the surface, 1 deep
+                const v = n.noise3(x * 0.09 + 137.7, y * 0.115, z * 0.09 - 91.3);
+                return v > 0.74 - 0.16 * fade;
             }
             // Ore veins: sparse deterministic vein CENTERS collected ONCE per chunk
             // (fast), then per-voxel membership falls off with Manhattan distance ->
@@ -430,7 +489,7 @@
                                         else id = 3;
                                         if (id === 3 && wy >= 1 && wy <= 54) id = oreFromVeins(veins, n, wx, wy, wz, seed);
                                     }
-                                    if (wy > 1 && n.noise3(wx * 0.09 + 137.7, wy * 0.115, wz * 0.09 - 91.3) > 0.6) id = 0; // caves
+                                    if (caveAt(n, wx, wy, wz, h)) id = 0;
                                 }
                                 dAbove = d;
                             }
@@ -439,6 +498,7 @@
                     }
                 }
                 placeTrees(data, cx, cy, cz, n, seed);
+                placePlants(data, cx, cy, cz, n, seed);
                 return data;
             }
 
@@ -499,6 +559,35 @@
                     }
             }
 
+            // ---- Ground cover: grass tufts and flowers on exposed grass blocks.
+            // Runs on the padded field AFTER trees, purely from the data already there,
+            // so a plant only ever appears on a real grass block with air above it and
+            // never lands under a canopy. Deterministic per (x,z), so chunk borders match.
+            function placePlants(data, cx, cy, cz, n, seed) {
+                const x0 = cx * CS - 1, y0 = cy * CS - 1, z0 = cz * CS - 1;
+                for (let px = 0; px < PS; px++) for (let pz = 0; pz < PS; pz++) {
+                    const wx = x0 + px, wz = z0 + pz;
+                    // patchiness: broad noise field so meadows clump instead of speckling
+                    const patch = n.noise3(wx * 0.021 + 311.4, 5.5, wz * 0.021 - 77.2);
+                    const dens = 0.05 + 0.24 * Math.max(0, patch);   // sparse verge -> lush meadow
+                    const r = hash2(wx * 7 + 3, wz * 11 + 19, seed);
+                    if (r > dens) continue;
+                    for (let py = 1; py < PS; py++) {
+                        if (data[(py * PS + pz) * PS + px] !== 0) continue;      // need air
+                        if (data[((py - 1) * PS + pz) * PS + px] !== 1) continue; // on grass only
+                        // Headroom: don't jam a tuft against the underside of a canopy.
+                        // The owning chunk always has this row (plants land in its
+                        // interior), so the decision is the same from every direction.
+                        if (py + 1 < PS && data[((py + 1) * PS + pz) * PS + px] !== 0) break;
+                        const wy = y0 + py;
+                        if (wy > 78) break;                                      // bare above the tree line
+                        const f = hash2(wx * 13 + 101, wz * 17 + 41, seed);
+                        data[(py * PS + pz) * PS + px] = f < 0.82 ? 25 : (f < 0.91 ? 26 : 27);
+                        break;
+                    }
+                }
+            }
+
             // ---- Mesher: merged geometry, faces emitted ONLY where the neighbor is air.
             // Textures come from the 8x8 atlas (128px, 16px tiles) TexGen builds on the
             // main thread; the mesher just bakes tile UVs. Indices follow TexGen.ORDER:
@@ -514,6 +603,9 @@
                 17: [20, 21, 9], 18: [9, 22, 9], 19: [23, 23, 23], 20: [24, 24, 24],
                 21: [26, 25, 26], 22: [27, 27, 27], 23: [28, 28, 28], 24: [29, 29, 29]
             };
+            // Cross-sprite plants: blockId -> atlas tile. Appended to TexGen.ORDER, so
+            // 30/31/32 are tallgrass / flower_red / flower_yellow.
+            const PLANT = { 25: 30, 26: 31, 27: 32 };
             const AG = 8, TSTEP = 1 / AG, TIN = 0.5 / 128; // atlas grid, tile span, half-texel inset
             // s uses Minecraft's face shading (top 1.0, Z 0.8, X 0.6, bottom 0.5);
             // a = the two tangent axes of the face plane (for ambient occlusion probes).
@@ -540,8 +632,8 @@
             function buildMesh(padded, cx, cy, cz, plight) {
                 const pos = [], nrm = [], col = [], uv = [], idx = [], lit = [];
                 let faces = 0, solids = 0;
-                // glass (22) and torches (23) don't occlude their neighbors' faces
-                const OCC = v => v > 0 && v !== 22 && v !== 23;
+                // glass (22), torches (23) and plants (25-27) don't occlude neighbours
+                const OCC = v => v > 0 && v !== 22 && v !== 23 && !PLANT[v];
                 const pidx = (X, Y, Z) => ((Y + 1) * PS + (Z + 1)) * PS + (X + 1);
                 const solidP = (X, Y, Z) => OCC(padded[pidx(X, Y, Z)]) ? 1 : 0;
                 const NOLIGHT = !plight;
@@ -574,20 +666,24 @@
                     const t = 28, P16 = TSTEP / 16;
                     const tu = (t % AG) * TSTEP, tv = 1 - ((t / AG | 0) + 1) * TSTEP;
                     const u0 = tu + 7 * P16, u1 = tu + 9 * P16;       // the 2 stick/flame columns
-                    const tv0 = tv, tv1 = tv + 14 * P16;              // base up through the flame tip
+                    const tv0 = tv, tv1 = tv + 10 * P16;              // rows 6-15: stick + flame base
+                    // The cap is its own 2x2 patch of the ember rows (8-9). Reusing the
+                    // side strip here smeared the whole gradient across a flat square.
+                    const cv0 = tv + 6 * P16, cv1 = tv + 8 * P16;
                     const x0 = x + 0.4375, x1 = x + 0.5625, z0 = z + 0.4375, z1 = z + 0.5625, yb = y, yt = y + 0.625;
                     // A torch is its own light source: full block light so the sprite
                     // glows on its own, but only the REAL skylight of its voxel, so a
                     // torch in a cave doesn't quietly pick up the daylight term.
                     const tSky = NOLIGHT ? 255 : (plight[pidx(x, y, z)] >> 4) * 17;
-                    const quad = (ax, ay, az, bx2, by2, bz2, cx3, cy3, cz3, dx3, dy3, dz3, nx, ny, nz) => {
+                    const quad = (ax, ay, az, bx2, by2, bz2, cx3, cy3, cz3, dx3, dy3, dz3, nx, ny, nz, cap) => {
                         const b = pos.length / 3;
+                        const a0 = cap ? cv0 : tv0, a1 = cap ? cv1 : tv1;
                         pos.push(ax, ay, az, bx2, by2, bz2, cx3, cy3, cz3, dx3, dy3, dz3);
                         for (let q = 0; q < 4; q++) {
                             nrm.push(nx * 127, ny * 127, nz * 127); col.push(255, 255, 255);
                             lit.push(tSky, 255);
                         }
-                        uv.push(u0, tv0, u1, tv0, u1, tv1, u0, tv1);
+                        uv.push(u0, a0, u1, a0, u1, a1, u0, a1);
                         idx.push(b, b + 1, b + 2, b, b + 2, b + 3);
                         faces++;
                     };
@@ -595,13 +691,39 @@
                     quad(x1, yb, z0, x0, yb, z0, x0, yt, z0, x1, yt, z0, 0, 0, -1);
                     quad(x1, yb, z1, x1, yb, z0, x1, yt, z0, x1, yt, z1, 1, 0, 0);
                     quad(x0, yb, z0, x0, yb, z1, x0, yt, z1, x0, yt, z0, -1, 0, 0);
-                    quad(x0, yt, z0, x0, yt, z1, x1, yt, z1, x1, yt, z0, 0, 1, 0);
+                    quad(x0, yt, z0, x0, yt, z1, x1, yt, z1, x1, yt, z0, 0, 1, 0, true);
+                };
+                // Two quads crossed in an X, double-sided so the tuft reads from any
+                // angle. Lit from the voxel's own light (plants are transparent, so the
+                // light field has a real value there) rather than from a face neighbour.
+                const emitCross = (x, y, z, tile) => {
+                    const u0 = (tile % AG) * TSTEP + TIN, u1 = (tile % AG + 1) * TSTEP - TIN;
+                    const row = tile / AG | 0;
+                    const v1 = 1 - row * TSTEP - TIN, v0 = 1 - (row + 1) * TSTEP + TIN;
+                    const L = NOLIGHT ? 255 : (plight[pidx(x, y, z)] >> 4) * 17;
+                    const B = NOLIGHT ? 0 : (plight[pidx(x, y, z)] & 15) * 17;
+                    const h = 0.94, m = 0.5, r = 0.4534; // slightly under a full block
+                    const quad = (ax, az, bx2, bz2, nx, nz) => {
+                        const b = pos.length / 3;
+                        pos.push(x + ax, y, z + az, x + bx2, y, z + bz2,
+                                 x + bx2, y + h, z + bz2, x + ax, y + h, z + az);
+                        for (let q = 0; q < 4; q++) {
+                            nrm.push(nx * 127, 0, nz * 127); col.push(235, 235, 235); lit.push(L, B);
+                        }
+                        uv.push(u0, v0, u1, v0, u1, v1, u0, v1);
+                        idx.push(b, b + 1, b + 2, b, b + 2, b + 3,     // front
+                                 b, b + 2, b + 1, b, b + 3, b + 2);    // and back
+                        faces += 2;
+                    };
+                    quad(m - r, m - r, m + r, m + r, -0.7071, 0.7071);
+                    quad(m - r, m + r, m + r, m - r, 0.7071, 0.7071);
                 };
                 for (let y = 0; y < CS; y++) for (let z = 0; z < CS; z++) for (let x = 0; x < CS; x++) {
                     const id = padded[((y + 1) * PS + (z + 1)) * PS + (x + 1)];
                     if (!id) continue;
                     solids++;
                     if (id === 23) { emitTorch(x, y, z); continue; }
+                    if (PLANT[id] !== undefined) { emitCross(x, y, z, PLANT[id]); continue; }
                     const tiles = TILE[id] || TILE[3];
                     const wx = cx * CS + x, wy = cy * CS + y, wz = cz * CS + z;
                     const v = 0.93 + 0.09 * vhash(wx, wy, wz);
@@ -746,7 +868,7 @@
         const dirLight = new THREE.DirectionalLight(0xfff3e0, 0.85);
         dirLight.position.set(60, 120, 40);
         dirLight.castShadow = true;
-        const SHADOW_EXT = 42;                       // half-width of the shadowed box
+        let SHADOW_EXT = 48;                         // half-width of the shadowed box
         dirLight.shadow.mapSize.set(2048, 2048);
         dirLight.shadow.camera.left = -SHADOW_EXT;
         dirLight.shadow.camera.right = SHADOW_EXT;
@@ -763,6 +885,23 @@
         const sunDir = new THREE.Vector3(0.4, 0.85, 0.3);
         // Re-aims the sun's shadow box at whoever we're following. Snapping the centre
         // to whole world units stops the shadow edges from crawling as you walk.
+        // Resizes the shadow box and map. Both are cheap to change but need the camera
+        // and the map re-created, so this only runs when a setting actually moves.
+        function applyShadowQuality(ext, size) {
+            SHADOW_EXT = ext;
+            const cam = dirLight.shadow.camera;
+            cam.left = -ext; cam.right = ext; cam.top = ext; cam.bottom = -ext;
+            cam.far = Math.max(300, ext * 6);
+            cam.updateProjectionMatrix();
+            if (dirLight.shadow.mapSize.x !== size) {
+                dirLight.shadow.mapSize.set(size, size);
+                if (dirLight.shadow.map) { dirLight.shadow.map.dispose(); dirLight.shadow.map = null; }
+            }
+            // Bigger boxes spread the same texels over more world, so acne needs a
+            // proportionally larger bias or flat ground starts self-shadowing.
+            dirLight.shadow.bias = -0.0009 * (ext / 48) * (2048 / size);
+            dirLight.shadow.normalBias = 0.035 * (ext / 48);
+        }
         function updateShadowCamera(p) {
             const cam = dirLight.shadow.camera;
             const cx2 = Math.round(p.pos.x), cy2 = Math.round(p.pos.y), cz2 = Math.round(p.pos.z);
@@ -775,7 +914,8 @@
 
         // Block texture atlas: TexGen recreates the uploaded 16x16 tiles procedurally.
         // NearestFilter + no mipmaps = crisp pixels (no blur) at any distance.
-        const atlasTex = new THREE.CanvasTexture(TexGen.buildAtlas(document.createElement('canvas')));
+        const atlasCanvas = document.createElement('canvas');
+        const atlasTex = new THREE.CanvasTexture(TexGen.buildAtlas(atlasCanvas));
         atlasTex.magFilter = THREE.NearestFilter;
         atlasTex.minFilter = THREE.NearestFilter;
         atlasTex.generateMipmaps = false;
@@ -821,6 +961,35 @@
         }
         /*__SHADER_SRC_END__*/
         applyVoxelLight(chunkMaterial);
+
+        // ---- animated tiles: repaint the torch flame straight into the atlas --------
+        // Every torch in the world shares these texels, so one 128x128 re-upload per
+        // frame-step animates all of them. The held torch is a separate canvas, so it
+        // gets repainted too, and the torch light flickers very slightly in sympathy.
+        const atlasCtx = atlasCanvas.getContext('2d');
+        const animTiles = TexGen.ANIMATED
+            .map(name => ({ name, i: TexGen.ORDER.indexOf(name) }))
+            .filter(t => t.i >= 0);
+        const TORCH_BASE = lightUniforms.uTorchCol.value.clone();
+        let flameFrame = 0, flameT = 0;
+        function animateTiles(dt) {
+            flameT += dt;
+            if (flameT < 0.115) return;                 // ~9 fps, MC's own flame cadence
+            flameT = 0;
+            flameFrame = (flameFrame + 1) & 3;
+            for (const t of animTiles) {
+                TexGen.drawTile(t.name, atlasCtx, (t.i % TexGen.GRID) * TexGen.SIZE,
+                                ((t.i / TexGen.GRID) | 0) * TexGen.SIZE, flameFrame);
+                const hand = texCache.get(t.name);      // same tile in the first-person pass
+                if (hand) {
+                    TexGen.drawTile(t.name, hand.image.getContext('2d'), 0, 0, flameFrame);
+                    hand.needsUpdate = true;
+                }
+            }
+            atlasTex.needsUpdate = true;
+            const f = 0.94 + 0.06 * ((flameFrame & 1) ? 1 : 0.4);
+            lightUniforms.uTorchCol.value.copy(TORCH_BASE).multiplyScalar(f);
+        }
 
         // ============================ CHUNK MANAGER ============================
         const chunks = new Map();        // key -> {cx,cy,cz, voxels, mesh, rev, state}
@@ -897,7 +1066,10 @@
         //
         // The work is budgeted per frame: terrain streaming in can enqueue hundreds of
         // thousands of voxels, and doing that in one go would stall the frame.
-        const lightOpaque = id => id > 0 && id !== 22 && id !== 23; // glass + torch pass light
+        const PLANT_IDS = new Set([25, 26, 27]);          // grass tuft, red flower, yellow flower
+        const isPlant = id => PLANT_IDS.has(id);
+        // glass, torches and ground cover all pass light
+        const lightOpaque = id => id > 0 && id !== 22 && id !== 23 && !PLANT_IDS.has(id);
         const emitOf = id => (id === 23 ? 14 : 0);                  // torches are the light source
         const DX = [1, -1, 0, 0, 0, 0], DY = [0, 0, 1, -1, 0, 0], DZ = [0, 0, 0, 0, 1, -1];
         const DIR_DOWN = 3;
@@ -1194,7 +1366,8 @@
         }
         const solidAt = (wx, wy, wz) => {
             const b = getBlock(wx, wy, wz);
-            return b === undefined ? true : (b > 0 && b !== 23); // torches are walk-through
+            // torches and ground cover are walk-through
+            return b === undefined ? true : (b > 0 && b !== 23 && !PLANT_IDS.has(b));
         };
 
         function requestRemesh(cx, cy, cz) {
@@ -1243,6 +1416,8 @@
             em.set(li, id);
             relightEdit(wx, wy, wz, id);  // queues the flood fill; lightTick re-meshes after
             requestRemesh(cx, cy, cz);    // but show the edit itself on the very next frame
+            // Ground cover can't float: pull it down with whatever it was standing on.
+            if (id === 0 && isPlant(getBlock(wx, wy + 1, wz))) setBlock(wx, wy + 1, wz, 0, fromNet);
             if (lx === 0) requestRemesh(cx - 1, cy, cz);
             if (lx === CS - 1) requestRemesh(cx + 1, cy, cz);
             if (ly === 0) requestRemesh(cx, cy - 1, cz);
@@ -1328,21 +1503,51 @@
                 p.spawned = true;
                 return;
             }
-            const sx = 8.5 + p.idx * 3, sz = 8.5;
-            const cx = Math.floor(sx / CS), cz = Math.floor(sz / CS);
-            for (let cy = 0; cy < WORLD_CY; cy++) {
-                const ch = chunks.get(key(cx, cy, cz));
-                if (!ch || !ch.voxels) return; // wait for spawn chunks
+            // Spawn scatter. Every machine ran the same code and landed on the SAME
+            // block, so networked players stood inside one another — and since the
+            // avatar boxes are backface-culled, that reads as "everyone is invisible".
+            // Offsets walk outward in a ring; which one we start from is seeded by our
+            // own peer id, so two machines pick different spots without talking first.
+            let seedOff = p.idx * 7;
+            if (net && net.localId) {
+                let h = 0;
+                for (const c of net.localId) h = (h * 31 + c.charCodeAt(0)) | 0;
+                seedOff = ((h >>> 0) % 16) + p.idx * 3;
             }
-            for (let y = WORLD_H - 2; y > 0; y--) {
-                if (getBlock(Math.floor(sx), y, Math.floor(sz)) > 0) {
-                    p.pos.set(sx, y + 1.01, sz);
+            for (let k2 = 0; k2 < SPAWN_RING.length; k2++) {
+                const [ox, oz] = SPAWN_RING[(seedOff + k2) % SPAWN_RING.length];
+                const sx = 8.5 + ox, sz = 8.5 + oz;
+                const cx = Math.floor(sx / CS), cz = Math.floor(sz / CS);
+                let ready = true;
+                for (let cy = 0; cy < WORLD_CY && ready; cy++)
+                    if (!chunks.get(key(cx, cy, cz))?.voxels) ready = false;
+                if (!ready) { if (k2 === 0) return; continue; } // wait on the first choice only
+                for (let y = WORLD_H - 2; y > 0; y--) {
+                    if (getBlock(Math.floor(sx), y, Math.floor(sz)) <= 0) continue;
+                    if (getBlock(Math.floor(sx), y + 1, Math.floor(sz)) > 0 ||
+                        getBlock(Math.floor(sx), y + 2, Math.floor(sz)) > 0) break; // no headroom
+                    const py = y + 1.01;
+                    // don't drop on top of someone already standing there
+                    if (occupiedSpawn(sx, py, sz)) break;
+                    p.pos.set(sx, py, sz);
                     p.vel.set(0, 0, 0);
                     p.fallPeak = p.pos.y;
                     p.spawned = true;
                     return;
                 }
             }
+        }
+        // 3x3-ish ring of spawn offsets, nearest first
+        const SPAWN_RING = [[0, 0], [2, 0], [-2, 0], [0, 2], [0, -2], [2, 2], [-2, -2], [2, -2], [-2, 2],
+                            [4, 0], [-4, 0], [0, 4], [0, -4], [4, 4], [-4, -4], [4, -4], [-4, 4]];
+        function occupiedSpawn(x, y, z) {
+            for (const q of players)
+                if (q.spawned && Math.abs(q.pos.x - x) < 1.2 && Math.abs(q.pos.z - z) < 1.2 &&
+                    Math.abs(q.pos.y - y) < 2) return true;
+            for (const r of remotes.values())
+                for (const c of r.cur)
+                    if (c && Math.abs(c.x - x) < 1.2 && Math.abs(c.z - z) < 1.2 && Math.abs(c.y - y) < 2) return true;
+            return false;
         }
 
         // ============================== PHYSICS ================================
@@ -1388,8 +1593,16 @@
             let mz = -Math.sin(p.yaw) * inp.moveX + Math.cos(p.yaw) * inp.moveZ;
             const mag = Math.hypot(mx, mz);
             if (mag > 1) { mx /= mag; mz /= mag; }
+            // Sprint: only forwards, only with something in the tank, and it cancels the
+            // moment you stop pushing forward — so you can't sprint sideways or coast.
+            const wantsFwd = inp.moveZ < -0.4;
+            p.sprinting = !!inp.sprint && wantsFwd && (p.flying || p.hunger > 6 || worldMode !== 'survival');
             const k = Math.min(1, (p.flying ? 10 : p.onGround ? 12 : 4) * dt);
-            const speedMul = p.flying ? 1.9 : 1;
+            const speedMul = (p.flying ? 1.9 : 1) * (p.sprinting ? SPRINT : 1);
+            if (p.sprinting && p.onGround && !p.flying && worldMode === 'survival') {
+                p.sprintT = (p.sprintT || 0) + dt;          // sprinting burns food faster
+                if (p.sprintT >= 22) { p.sprintT = 0; depleteFood(p, 1); }
+            }
             p.vel.x += (mx * WALK * speedMul - p.vel.x) * k;
             p.vel.z += (mz * WALK * speedMul - p.vel.z) * k;
             if (p.flying) {
@@ -1418,16 +1631,19 @@
             }
             // hunger: passive drain; regen only on a full-ish belly; empty belly starves
             if (worldMode === 'survival') {
+                // Idle drain: ~1 drumstick every 2 minutes, so a full bar lasts ~20 min
+                // of standing around. Sprinting and jumping bill on top of this.
                 p.hungerT = (p.hungerT || 0) + dt;
-                if (p.hungerT >= 60) { p.hungerT = 0; depleteFood(p, 2); }  // 1 drumstick / minute idle
+                if (p.hungerT >= 120) { p.hungerT = 0; depleteFood(p, 2); }
                 if (p.hunger >= 16 && p.health < 20) {                       // regen needs 8+ drumsticks
                     p.regenT = (p.regenT || 0) + dt;
                     if (p.regenT >= 4) { p.regenT = 0; p.health = Math.min(20, p.health + 1); updateHearts(); }
                 } else if (p.hunger <= 0) {                                  // starvation: down to half a heart
                     p.starveT = (p.starveT || 0) + dt;
-                    if (p.starveT >= 4) {
+                    if (p.starveT >= 10) {
                         p.starveT = 0;
-                        if (p.health > 1) { p.health--; toast('P' + (p.idx + 1) + ' is starving!'); updateHearts(); }
+                        // no toast: the emptied hunger bar and draining hearts say it
+                        if (p.health > 1) { p.health--; hurtFlash(); updateHearts(); }
                     }
                 } else p.regenT = 0;
             }
@@ -1439,13 +1655,16 @@
         // Damage: red vignette flash instead of a text toast (hearts tell the story)
         const hurtEl = document.getElementById('hurt');
         let hurtTimer = 0;
+        function hurtFlash(n = 1) {
+            hurtEl.style.opacity = Math.min(0.9, 0.35 + n * 0.12);
+            clearTimeout(hurtTimer);
+            hurtTimer = setTimeout(() => hurtEl.style.opacity = 0, 130);
+        }
         function damagePlayer(p, n) {
             if (worldMode !== 'survival' || n <= 0 || !p.spawned) return;
             p.health -= n;
             p.hurtT = 0.3;                                // mob knockback/flash window
-            hurtEl.style.opacity = Math.min(0.9, 0.35 + n * 0.12);
-            clearTimeout(hurtTimer);
-            hurtTimer = setTimeout(() => hurtEl.style.opacity = 0, 130);
+            hurtFlash(n);
             if (p.health <= 0) {
                 p.health = 20;
                 p.hunger = 20; p.sat = 5;
@@ -1587,6 +1806,7 @@
             const tier = it && it.type === 'Tool' ? it.tier : 0;
             const T = 1000 - (it && it.type === 'Tool' ? tier * 120 : 0);
             const tool = t => it && it.tool === t;
+            if (isPlant(id)) return 40;                                  // ground cover: instant
             if (id === 23) return 80;                                    // torch pops
             if (id === 22) return 350;                                   // glass shatters fast
             if (id === 20) return tool('pickaxe') && tier >= 4 ? 1200 : 10000; // obsidian needs diamond
@@ -1669,11 +1889,11 @@
             19: ['mossy', 'mossy', 'mossy'], 20: ['obsidian', 'obsidian', 'obsidian'],
             21: ['furnace_top', 'furnace_front', 'furnace_top'],
             22: ['glass', 'glass', 'glass'], 24: ['redstone_ore', 'redstone_ore', 'redstone_ore']
-            // NOTE: 23 (torch) is deliberately absent — see SPRITE_BLOCKS below.
+            // NOTE: 23 (torch) and 25-27 (plants) are deliberately absent — see SPRITE_BLOCKS.
         };
         // Blocks that are held as a flat sprite instead of a cube (MC does this for
-        // torches). Without this a torch fell through to the stone cube fallback.
-        const SPRITE_BLOCKS = new Set([23]);
+        // torches and ground cover). Without this they fell through to the stone cube.
+        const SPRITE_BLOCKS = new Set([23, 25, 26, 27]);
         const handGroup = new THREE.Group();
         handGroup.scale.setScalar(1);
         handScene.add(handGroup);
@@ -1798,8 +2018,8 @@
 
         // ================================ INPUT ================================
         const inputs = [
-            { moveX: 0, moveZ: 0, lookX: 0, lookY: 0, jump: false, down: false, brk: false, place: false, cycle: 0 },
-            { moveX: 0, moveZ: 0, lookX: 0, lookY: 0, jump: false, down: false, brk: false, place: false, cycle: 0 }
+            { moveX: 0, moveZ: 0, lookX: 0, lookY: 0, jump: false, down: false, brk: false, place: false, sprint: false, cycle: 0 },
+            { moveX: 0, moveZ: 0, lookX: 0, lookY: 0, jump: false, down: false, brk: false, place: false, sprint: false, cycle: 0 }
         ];
         const DEADZONE = 0.16;
         const dz = v => Math.abs(v) > DEADZONE ? v : 0;
@@ -1815,7 +2035,7 @@
             for (let i = 0; i < 2; i++) {
                 const inp = inputs[i];
                 inp.moveX = inp.moveZ = inp.lookX = inp.lookY = 0;
-                inp.jump = inp.down = inp.brk = inp.place = false;
+                inp.jump = inp.down = inp.brk = inp.place = inp.sprint = false;
                 inp.cycle = 0;
             }
             // Settings > Controllers assigns each connected pad to P1 / P2 / Off, so a
@@ -1835,6 +2055,7 @@
                 const btn = n => gp.buttons[n] && (gp.buttons[n].value > 0.5 || gp.buttons[n].pressed);
                 inp.jump = inp.jump || btn(0);
                 inp.down = inp.down || btn(1);  // B / Circle: descend while flying
+                inp.sprint = inp.sprint || btn(10) || gp.axes[1] < -0.92; // L3, or stick hard forward
                 inp.brk = inp.brk || btn(7);
                 inp.place = inp.place || btn(6);
                 if (btn(15)) inp.cycle = 1;
@@ -1854,6 +2075,7 @@
             if (down(B1.left)) i0.moveX = -1; if (down(B1.right)) i0.moveX = 1;
             if (down(B1.jump)) i0.jump = true;
             if (down(B1.down)) i0.down = true;
+            if (down(B1.sprint)) i0.sprint = true;
             if (down(B1.dig)) i0.brk = true;
             if (down(B1.place)) i0.place = true;
             if (down(B2.forward)) i1.moveZ = -1; if (down(B2.back)) i1.moveZ = 1;
@@ -1862,6 +2084,7 @@
             if (down(B2.lookUp)) i1.lookY = -1; if (down(B2.lookDown)) i1.lookY = 1;
             if (down(B2.jump)) i1.jump = true;
             if (down(B2.down)) i1.down = true;
+            if (down(B2.sprint)) i1.sprint = true;
             if (down(B2.dig)) i1.brk = true;
             if (down(B2.place)) i1.place = true;
         }
@@ -1983,9 +2206,23 @@
             const k2 = w + ':' + h + ':' + d;
             return mobGeo[k2] || (mobGeo[k2] = new THREE.BoxGeometry(w, h, d));
         }
+        // Limbs hang from a pivot Group instead of translating their geometry. boxOf()
+        // hands back a SHARED BufferGeometry, so geometry.translate() moved every limb
+        // that had ever used that size — each new mob shifted them all further down and
+        // the legs sank through the floor. The pivot also gives a clean hip to swing on.
+        function limb(w, h, d, mat, x, y, z) {
+            const pivot = new THREE.Group();
+            pivot.position.set(x, y, z);
+            const mesh = new THREE.Mesh(boxOf(w, h, d), mat);
+            mesh.position.y = -h / 2;                  // hangs below the pivot
+            mesh.castShadow = true; mesh.receiveShadow = true;
+            pivot.add(mesh);
+            return pivot;
+        }
         function buildMobMesh(kind) {
             const g = new THREE.Group();
             const M = c => new THREE.MeshLambertMaterial({ color: c });
+            const legs = g.userData.legs = [];
             if (kind === 'pig') {
                 const pink = M(0xef9a9f), snout = M(0xd77f86);
                 const body = new THREE.Mesh(boxOf(0.62, 0.5, 0.9), pink);
@@ -1996,11 +2233,9 @@
                 nose.position.set(0, 0.54, -0.8);
                 g.add(body, head, nose);
                 for (const [dx, dz] of [[-0.2, -0.3], [0.2, -0.3], [-0.2, 0.3], [0.2, 0.3]]) {
-                    const leg = new THREE.Mesh(boxOf(0.16, 0.28, 0.16), pink);
-                    leg.geometry.translate(0, -0.14, 0);   // pivot at the hip
-                    leg.position.set(dx, 0.28, dz);
+                    const leg = limb(0.16, 0.28, 0.16, pink, dx, 0.28, dz); // hip at 0.28, foot at 0
                     g.add(leg);
-                    (g.userData.legs = g.userData.legs || []).push(leg);
+                    legs.push(leg);
                 }
             } else {
                 const skin = M(0x4a7a4a), shirt = M(0x3b5b8f), pants = M(0x2f3f5f);
@@ -2010,18 +2245,14 @@
                 head.position.y = 1.68;
                 g.add(body, head);
                 for (const dx of [-0.36, 0.36]) {          // arms out front, MC-style
-                    const arm = new THREE.Mesh(boxOf(0.2, 0.62, 0.2), skin);
-                    arm.geometry.translate(0, -0.31, 0);
-                    arm.position.set(dx, 1.42, -0.12);
+                    const arm = limb(0.2, 0.62, 0.2, skin, dx, 1.42, -0.12);
                     arm.rotation.x = -1.4;
                     g.add(arm);
                 }
                 for (const dx of [-0.13, 0.13]) {
-                    const leg = new THREE.Mesh(boxOf(0.22, 0.75, 0.22), pants);
-                    leg.geometry.translate(0, -0.375, 0);
-                    leg.position.set(dx, 0.75, 0);
+                    const leg = limb(0.22, 0.75, 0.22, pants, dx, 0.75, 0); // hip at 0.75, foot at 0
                     g.add(leg);
-                    (g.userData.legs = g.userData.legs || []).push(leg);
+                    legs.push(leg);
                 }
             }
             g.traverse(o => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
@@ -2476,12 +2707,23 @@
         // ---- user preferences: video, mouse, controller assignment, custom keybinds ----
         const DEFAULT_BINDS = {
             p1: { forward: 'KeyW', back: 'KeyS', left: 'KeyA', right: 'KeyD', jump: 'Space',
-                  down: 'ShiftLeft', dig: 'Mouse0', place: 'Mouse2', inventory: 'KeyE' },
+                  down: 'ShiftLeft', sprint: 'ControlLeft', dig: 'Mouse0', place: 'Mouse2', inventory: 'KeyE' },
             p2: { forward: 'ArrowUp', back: 'ArrowDown', left: 'ArrowLeft', right: 'ArrowRight',
                   lookUp: 'KeyI', lookDown: 'KeyK', lookLeft: 'KeyJ', lookRight: 'KeyL',
-                  jump: 'KeyN', down: 'ShiftRight', dig: 'KeyU', place: 'KeyO', inventory: 'KeyM', hotbar: 'KeyP' }
+                  jump: 'KeyN', down: 'ShiftRight', sprint: 'Slash', dig: 'KeyU', place: 'KeyO',
+                  inventory: 'KeyM', hotbar: 'KeyP' }
         };
-        const prefs = { renderDist: 4, fov: 70, sens: 1.0, bob: true, shadows: true, padAssign: [0, 1],
+        // Graphics presets. Picking one stamps its values into prefs; touching any of
+        // the individual controls afterwards flips the preset to "custom" rather than
+        // silently disagreeing with what the dropdown says.
+        const GFX_PRESETS = {
+            low:    { renderDist: 3,  shadows: false, shadowDist: 24, shadowQ: 1024 },
+            medium: { renderDist: 5,  shadows: true,  shadowDist: 40, shadowQ: 2048 },
+            high:   { renderDist: 8,  shadows: true,  shadowDist: 64, shadowQ: 2048 },
+            ultra:  { renderDist: 12, shadows: true,  shadowDist: 96, shadowQ: 4096 }
+        };
+        const prefs = { renderDist: 5, fov: 70, sens: 1.0, bob: true, shadows: true,
+                        shadowDist: 40, shadowQ: 2048, preset: 'medium', padAssign: [0, 1],
                         binds: { p1: { ...DEFAULT_BINDS.p1 }, p2: { ...DEFAULT_BINDS.p2 } } };
         try {
             const saved = JSON.parse(localStorage.getItem('voxel/prefs') || '{}');
@@ -2494,14 +2736,18 @@
         function savePrefs() { try { localStorage.setItem('voxel/prefs', JSON.stringify(prefs)); } catch (e) {} }
         let boundCodes = new Set();
         function applyPrefs() {
-            LOAD_R = Math.max(2, Math.min(6, prefs.renderDist | 0));
-            scene.fog.near = Math.max(10, LOAD_R * 16 * 0.4);
+            LOAD_R = Math.max(2, Math.min(12, prefs.renderDist | 0));
+            scene.fog.near = Math.max(10, LOAD_R * 16 * 0.55);
             scene.fog.far = LOAD_R * 16 - 6;
+            camera1.far = camera2.far = Math.max(400, LOAD_R * 16 + 120);
+            camera1.updateProjectionMatrix(); camera2.updateProjectionMatrix();
             shadowsOn = prefs.shadows !== false;
             if (dirLight.castShadow !== shadowsOn) {
                 dirLight.castShadow = shadowsOn;
                 chunkMaterial.needsUpdate = true;   // shadow chunks compile in/out
             }
+            applyShadowQuality(Math.max(16, Math.min(128, prefs.shadowDist | 0)) / 2,
+                               Math.max(512, Math.min(4096, prefs.shadowQ | 0)));
             boundCodes = new Set([...Object.values(prefs.binds.p1), ...Object.values(prefs.binds.p2)]);
             applyViewMode();
             if (worldActive) updateChunks(true);
@@ -2511,6 +2757,10 @@
             $('setSens').value = Math.round(prefs.sens * 100); $('setSensV').textContent = prefs.sens.toFixed(2);
             $('setBob').checked = !!prefs.bob;
             $('setShadow').checked = shadowsOn;
+            $('setShadowD').value = prefs.shadowDist;
+            $('setShadowDV').textContent = prefs.shadowDist;
+            $('setShadowQ').value = String(prefs.shadowQ);
+            $('setPreset').value = prefs.preset || 'custom';
             $('setPadA').value = String(prefs.padAssign[0]);
             $('setPadB').value = String(prefs.padAssign[1]);
         }
@@ -2518,10 +2768,10 @@
         // ---- custom keybinds: click a binding, press any key or mouse button ----
         const BIND_ACTIONS = {
             p1: [['forward', 'Forward'], ['back', 'Back'], ['left', 'Left'], ['right', 'Right'],
-                 ['jump', 'Jump'], ['down', 'Descend (fly)'], ['dig', 'Dig / Attack'], ['place', 'Place / Use'], ['inventory', 'Inventory']],
+                 ['jump', 'Jump'], ['sprint', 'Sprint'], ['down', 'Descend (fly)'], ['dig', 'Dig / Attack'], ['place', 'Place / Use'], ['inventory', 'Inventory']],
             p2: [['forward', 'Forward'], ['back', 'Back'], ['left', 'Left'], ['right', 'Right'],
                  ['lookUp', 'Look Up'], ['lookDown', 'Look Down'], ['lookLeft', 'Look Left'], ['lookRight', 'Look Right'],
-                 ['jump', 'Jump'], ['down', 'Descend (fly)'], ['dig', 'Dig'], ['place', 'Place / Use'], ['inventory', 'Inventory'], ['hotbar', 'Hotbar Cycle']]
+                 ['jump', 'Jump'], ['sprint', 'Sprint'], ['down', 'Descend (fly)'], ['dig', 'Dig'], ['place', 'Place / Use'], ['inventory', 'Inventory'], ['hotbar', 'Hotbar Cycle']]
         };
         let bindCapture = null;
         function keyLabel(code) {
@@ -2561,11 +2811,22 @@
         function openSettings() { settingsFrom = gameState === 'paused' ? 'paused' : 'title'; renderBinds(); setState('settings'); }
         function closeSettings() { bindCapture = null; setState(settingsFrom); }
         const bindInput = (id, fn) => document.getElementById(id).addEventListener('input', e => { fn(e.target); savePrefs(); applyPrefs(); });
-        bindInput('setDist', t => prefs.renderDist = +t.value);
+        // Choosing a preset stamps its values in; nudging any single control below
+        // drops the dropdown to "custom" so it never lies about what's active.
+        bindInput('setPreset', t => {
+            const p = GFX_PRESETS[t.value];
+            if (!p) { prefs.preset = 'custom'; return; }
+            Object.assign(prefs, p);
+            prefs.preset = t.value;
+        });
+        const custom = fn => t => { fn(t); prefs.preset = 'custom'; };
+        bindInput('setShadowD', custom(t => prefs.shadowDist = +t.value));
+        bindInput('setShadowQ', custom(t => prefs.shadowQ = +t.value));
+        bindInput('setDist', custom(t => prefs.renderDist = +t.value));
         bindInput('setFov', t => prefs.fov = +t.value);
         bindInput('setSens', t => prefs.sens = +t.value / 100);
         bindInput('setBob', t => prefs.bob = t.checked);
-        bindInput('setShadow', t => prefs.shadows = t.checked);
+        bindInput('setShadow', custom(t => prefs.shadows = t.checked));
         bindInput('setPadA', t => prefs.padAssign[0] = +t.value);
         bindInput('setPadB', t => prefs.padAssign[1] = +t.value);
         document.getElementById('btnSettingsBack').onclick = () => closeSettings();
@@ -2905,7 +3166,7 @@
                 for (let i = 0; i < 2; i++) if (invOpenFor === i) { // inventory open: freeze inputs
                     const inp = inputs[i];
                     inp.moveX = inp.moveZ = inp.lookX = inp.lookY = 0;
-                    inp.jump = inp.down = inp.brk = inp.place = false;
+                    inp.jump = inp.down = inp.brk = inp.place = inp.sprint = false;
                     inp.cycle = 0;
                 }
                 const nLocal = splitMode ? 2 : 1;
@@ -2921,6 +3182,7 @@
             } else acc = 0; // paused / title: drop time instead of simulating it
 
             updateSky();
+            animateTiles(dt);
 
             const tnow = performance.now();
             for (let i = 0; i < 2; i++) {
@@ -2953,6 +3215,12 @@
                 p.avatar.visible = p.spawned;
                 p.cam.position.set(p.pos.x, p.pos.y + EYE, p.pos.z);
                 p.cam.rotation.set(p.pitch, p.yaw, 0);
+                // Sprint FOV kick, eased both ways so it never snaps
+                const wantFov = prefs.fov + (p.sprinting ? 8 : 0);
+                if (Math.abs(p.cam.fov - wantFov) > 0.05) {
+                    p.cam.fov += (wantFov - p.cam.fov) * Math.min(1, dt * 9);
+                    p.cam.updateProjectionMatrix();
+                }
             }
 
             if (worldActive) { updateChunks(false); lightTick(); }

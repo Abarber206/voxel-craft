@@ -38,11 +38,12 @@ the traffic.
 
 ## Controls
 
-**Player 1** — `W` `A` `S` `D` move, `Space` jump, `Shift` descend (creative), mouse to look,
-**left click** mine, **right click** place, `E` inventory, `1`–`9` or scroll to pick a hotbar slot.
+**Player 1** — `W` `A` `S` `D` move, `Ctrl` sprint, `Space` jump, `Shift` descend (creative),
+mouse to look, **left click** mine, **right click** place, `E` inventory, `1`–`9` or scroll
+to pick a hotbar slot.
 
-**Player 2 (split-screen)** — arrow keys move, `I` `J` `K` `L` look, `N` jump, `Right Shift`
-descend, `U` mine, `O` place, `M` inventory, `P` cycle hotbar.
+**Player 2 (split-screen)** — arrow keys move, `/` sprint, `I` `J` `K` `L` look, `N` jump,
+`Right Shift` descend, `U` mine, `O` place, `M` inventory, `P` cycle hotbar.
 
 Gamepads are auto-detected and assignable to either player in Settings. All keys are rebindable.
 
@@ -77,6 +78,7 @@ node light-test.mjs          # light engine: skylight, torches, removal, chunk s
 node shader-test.mjs         # the baked-light GLSL injection
 node perf-test.mjs           # chunk pipeline throughput, culling, memory
 node integration-test.mjs    # real terrain end-to-end: generate -> light -> mesh
+node world-test.mjs          # terrain shape, cave containment, ground cover, flame
 ```
 
 `shader-test.mjs` does a deeper check when Three.js is resolvable — either install it

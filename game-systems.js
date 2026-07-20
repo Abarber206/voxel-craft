@@ -87,6 +87,16 @@ const TexGen = (() => {
         }
         blit(c, x, y, m);
     };
+    // Small flower on a stem, bottom-anchored to match the grass tuft.
+    const flowerDraw = (petal, hilite) => (c, x, y) => {
+        const s = (X, Y, col) => { c.fillStyle = 'rgb(' + col + ')'; c.fillRect(x + X, y + Y, 1, 1); };
+        for (let Y = 9; Y < 16; Y++) s(7, Y, Y > 12 ? '70,120,44' : '86,140,54');   // stem
+        s(6, 12, '86,140,54'); s(9, 11, '86,140,54');                               // leaves
+        s(8, 12, '70,120,44'); s(5, 11, '70,120,44');
+        for (const [X, Y] of [[6, 6], [7, 5], [8, 6], [7, 7], [6, 8], [8, 8]]) s(X, Y, petal);
+        s(7, 6, hilite); s(7, 8, petal);
+        s(6, 7, '250,222,120'); s(8, 7, '236,200,96');                              // pollen centre
+    };
     const TILES = {
         // -- recreations of the uploaded textures (upgraded detail, same character) --
         dirt: (c, x, y) => blit(c, x, y, base(11, [104, 76, 50], 9, (m, r) => {
@@ -292,31 +302,69 @@ const TexGen = (() => {
             for (const [X, Y] of [[3, 3], [4, 2], [5, 1], [10, 9], [11, 8], [12, 7], [6, 12], [7, 11]])
                 s(X, Y, '238,247,252', 0.85);
         },
-        torch: (c, x, y) => {
-            // Transparent bg. Column layout matches the in-world sprite, which samples
-            // ONLY texels x=7..8 — so the stick and the flame core must live in those
-            // two columns; x=6/x=9 carry the flame's outer glow for the inventory icon.
+        // Animated: `frame` 0-3 cycles the flame while the stick and ember cap stay put.
+        // Transparent bg. Column layout matches the in-world sprite, which samples ONLY
+        // texels x=7..8 for the post and rows 9-10 for the top cap — so the stick and
+        // flame core must live in those two columns; x=6/x=9 carry the outer glow that
+        // only the inventory icon sees.
+        torch: (c, x, y, frame) => {
+            // Row budget matches Minecraft's 10/16-tall torch model exactly:
+            //   10-15 stick | 9 charred | 8 ember | 4-7 flame
+            // The in-world post samples rows 6-15 (10 rows over 0.625 blocks, so texels
+            // stay square) and the top cap samples rows 8-9, the ember.
             const s = (X, Y, col) => { c.fillStyle = 'rgb(' + col + ')'; c.fillRect(x + X, y + Y, 1, 1); };
-            for (let Y = 8; Y < 16; Y++) {            // wooden stick, lit from the left
+            for (let Y = 10; Y < 16; Y++) {           // wooden stick, lit from the left
                 s(7, Y, Y % 3 === 1 ? '150,118,74' : '134,104,64');
                 s(8, Y, Y % 3 === 2 ? '86,63,35' : '100,75,44');
             }
-            s(7, 7, '74,55,35'); s(8, 7, '58,42,26');  // charred head under the flame
-            s(7, 6, '120,84,44'); s(8, 6, '96,66,34'); // ember glow soaking into the wood
-            s(7, 5, '244,166,58'); s(8, 5, '221,134,44');
-            s(6, 4, '236,146,48'); s(7, 4, '255,214,120'); s(8, 4, '255,190,92'); s(9, 4, '224,128,40');
-            s(6, 3, '250,190,80'); s(7, 3, '255,246,198'); s(8, 3, '255,228,150'); s(9, 3, '246,172,66');
-            s(7, 2, '255,252,224'); s(8, 2, '255,238,178');
-            s(7, 1, '255,226,140');
+            s(7, 9, '74,55,35'); s(8, 9, '58,42,26');    // charred head
+            s(7, 8, '186,116,52'); s(8, 8, '156,94,40');  // ember, and the top-face cap
+            // Flame: four hand-drawn shapes, each a little taller or leaner than the
+            // last, so the loop reads as a flicker rather than a pulse.
+            const F = [
+                [[6, 7, '236,146,48'], [7, 7, '255,214,120'], [8, 7, '255,190,92'], [9, 7, '224,128,40'],
+                 [6, 6, '250,190,80'], [7, 6, '255,246,198'], [8, 6, '255,228,150'], [9, 6, '246,172,66'],
+                 [7, 5, '255,252,224'], [8, 5, '255,238,178'], [7, 4, '255,226,140']],
+                [[6, 7, '228,138,44'], [7, 7, '255,222,136'], [8, 7, '255,198,104'], [9, 7, '218,122,38'],
+                 [7, 6, '255,248,210'], [8, 6, '255,232,162'], [9, 6, '240,166,62'],
+                 [7, 5, '255,244,190'], [8, 5, '255,226,148'], [7, 4, '255,232,158'], [7, 3, '255,214,120']],
+                [[6, 7, '242,156,52'], [7, 7, '255,218,128'], [8, 7, '255,194,98'],
+                 [6, 6, '252,196,88'], [7, 6, '255,250,214'], [8, 6, '255,230,156'], [9, 6, '236,158,56'],
+                 [6, 5, '255,236,170'], [7, 5, '255,248,206'], [8, 5, '255,224,140'], [7, 4, '255,220,132']],
+                [[6, 7, '232,142,46'], [7, 7, '255,216,124'], [8, 7, '255,192,96'], [9, 7, '228,134,44'],
+                 [7, 6, '255,244,192'], [8, 6, '255,226,146'], [7, 5, '255,238,174'], [8, 5, '255,216,124']]
+            ][(frame | 0) & 3];
+            for (const [X, Y, col] of F) s(X, Y, col);
         },
-        redstone_ore: oreDraw(251, [224, 58, 44], [150, 28, 22])
+        redstone_ore: oreDraw(251, [224, 58, 44], [150, 28, 22]),
+        // ---- cross-sprite plants: transparent bg, bottom-anchored so they sit ON the
+        // ground rather than floating. Drawn narrow so the two crossed quads read as a
+        // tuft rather than a solid billboard.
+        tallgrass: (c, x, y) => {
+            const s = (X, Y, col) => { c.fillStyle = 'rgb(' + col + ')'; c.fillRect(x + X, y + Y, 1, 1); };
+            const G1 = '92,150,58', G2 = '74,128,46', G3 = '112,172,70';
+            // [rootX, height, lean, shade]
+            const blades = [[3, 7, -1, G2], [5, 10, 0, G1], [7, 12, 1, G3],
+                            [9, 9, 0, G1], [11, 11, -1, G2], [13, 6, 1, G2]];
+            for (const [bx, hgt, lean, col] of blades) {
+                for (let i = 0; i < hgt; i++) {
+                    const Y = 15 - i;
+                    const X = bx + Math.round(lean * (i / hgt) * 2);
+                    if (X < 0 || X > 15) continue;
+                    s(X, Y, i > hgt - 3 ? G3 : col);          // tips catch the light
+                }
+            }
+        },
+        flower_red: flowerDraw('196,54,54', '236,110,110'),
+        flower_yellow: flowerDraw('232,196,58', '252,232,140')
     };
     // Atlas layout — the mesher bakes these indices into UVs, so ORDER MATTERS.
     const ORDER = ['grass_top', 'grass_side', 'dirt', 'stone', 'log_side', 'log_top', 'leaves',
                    'sand', 'snow', 'plank', 'white', 'cobble', 'stonebrick', 'sandstone_top',
                    'sandstone_side', 'gravel', 'coal_ore', 'iron_ore', 'gold_ore', 'diamond_ore',
                    'crafting_top', 'crafting_side', 'bookshelf', 'mossy', 'obsidian',
-                   'furnace_front', 'furnace_top', 'glass', 'torch', 'redstone_ore'];
+                   'furnace_front', 'furnace_top', 'glass', 'torch', 'redstone_ore',
+                   'tallgrass', 'flower_red', 'flower_yellow'];  // append only: the mesher bakes these indices
     function buildAtlas(canvas) {
         canvas.width = canvas.height = SIZE * GRID;
         const ctx = canvas.getContext('2d');
@@ -553,7 +601,16 @@ const TexGen = (() => {
         return canvasCache[name] = c;
     }
     function icon(name) { return iconCache[name] || (iconCache[name] = tile(name).toDataURL()); }
-    return { buildAtlas, icon, tile, ORDER, GRID, SIZE };
+    // Repaints one animated tile in place — used to flicker torch flames without
+    // rebuilding the whole atlas. Returns false for tiles that aren't animated.
+    function drawTile(name, ctx, x0, y0, frame) {
+        if (!TILES[name]) return false;
+        ctx.clearRect(x0, y0, SIZE, SIZE);
+        TILES[name](ctx, x0, y0, frame);
+        return true;
+    }
+    const ANIMATED = ['torch'];
+    return { buildAtlas, icon, tile, drawTile, ORDER, GRID, SIZE, ANIMATED };
 })();
 
 /* ============================== ItemDB =================================== */
@@ -585,6 +642,9 @@ const ItemDB = (() => {
     B('glass', 'Glass', 22, 'glass');
     B('torch', 'Torch', 23, 'torch');
     B('redstone_ore', 'Redstone Ore', 24, 'redstone_ore');
+    B('tall_grass', 'Grass', 25, 'tallgrass');
+    B('flower_red', 'Poppy', 26, 'flower_red');
+    B('flower_yellow', 'Dandelion', 27, 'flower_yellow');
     def({ id: 'stick', name: 'Stick', type: 'Material', stack: 64, icon: 'stick' });
     def({ id: 'coal', name: 'Coal', type: 'Material', stack: 64, icon: 'coal' });
     def({ id: 'charcoal', name: 'Charcoal', type: 'Material', stack: 64, icon: 'charcoal' });
