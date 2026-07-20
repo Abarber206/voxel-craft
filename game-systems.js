@@ -97,6 +97,18 @@ const TexGen = (() => {
         s(7, 6, hilite); s(7, 8, petal);
         s(6, 7, '250,222,120'); s(8, 7, '236,200,96');                              // pollen centre
     };
+    // Erases scattered texels to alpha 0. The chunk material uses alphaTest, so cleared
+    // pixels vanish entirely — that's what turns a flat green square into foliage you
+    // can see daylight through. Deterministic per seed so both leaf types stay stable.
+    function punchHoles(c, x0, y0, seed, count) {
+        const r = rng(seed);
+        for (let k = 0; k < count; k++) {
+            const X = (r() * 16) | 0, Y = (r() * 16) | 0;
+            c.clearRect(x0 + X, y0 + Y, 1, 1);
+            if (r() < 0.45) c.clearRect(x0 + ((X + 1) & 15), y0 + Y, 1, 1);   // small clusters
+            if (r() < 0.3) c.clearRect(x0 + X, y0 + ((Y + 1) & 15), 1, 1);
+        }
+    }
     const TILES = {
         // -- recreations of the uploaded textures (upgraded detail, same character) --
         dirt: (c, x, y) => blit(c, x, y, base(11, [104, 76, 50], 9, (m, r) => {
@@ -141,11 +153,27 @@ const TexGen = (() => {
             dk(m, 6 * 16 + 11, 30); dk(m, 7 * 16 + 11, 30); dk(m, 7 * 16 + 12, 30);
             blit(c, x, y, m);
         },
-        leaves: (c, x, y) => blit(c, x, y, base(77, [70, 112, 48], 13, (m, r) => {
-            for (let k = 0; k < 22; k++) dk(m, (r() * 256) | 0, 34);
-            for (let k = 0; k < 14; k++) lt(m, (r() * 256) | 0, 18);
-            blob(m, r, 5, 18, 2);
-        })),
+        // Leaves read as flat green mush without depth cues. Layered clumps plus a few
+        // punched-through gaps (drawn as near-black so alphaTest can't be used here,
+        // but they still give the canopy visible structure against the sky).
+        // Cutout leaves: the canopy needs actual HOLES, not just darker pixels, or it
+        // reads as a solid green clump. `hole()` erases texels to alpha 0 and the chunk
+        // material's alphaTest drops them, so you see sky and branches through the gaps.
+        leaves: (c, x, y) => {
+            blit(c, x, y, base(77, [58, 100, 40], 10, (m, r) => {
+                for (let k = 0; k < 9; k++) blob(m, r, 2 + ((r() * 3) | 0), 26, 2);
+                for (let k = 0; k < 7; k++) {
+                    const i = (r() * 256) | 0;
+                    lt(m, i, 30); lt(m, (i + 1) & 255, 16); lt(m, (i + 16) & 255, 12);
+                }
+                for (let k = 0; k < 30; k++) dk(m, (r() * 256) | 0, 30);
+                for (let k = 0; k < 16; k++) {
+                    const i = (r() * 256) | 0;
+                    m[i] = [Math.min(255, m[i][0] + 46), Math.min(255, m[i][1] + 62), Math.min(255, m[i][2] + 30)];
+                }
+            }));
+            punchHoles(c, x, y, 79, 26);
+        },
         // -- generated tiles (palette-matched) --
         grass_top: (c, x, y) => blit(c, x, y, base(22, [106, 152, 64], 11, (m, r) => {
             blob(m, r, 10, 16, 1);
@@ -356,7 +384,76 @@ const TexGen = (() => {
             }
         },
         flower_red: flowerDraw('196,54,54', '236,110,110'),
-        flower_yellow: flowerDraw('232,196,58', '252,232,140')
+        flower_yellow: flowerDraw('232,196,58', '252,232,140'),
+        flower_blue: flowerDraw('72,104,214', '132,164,246'),
+        flower_white: flowerDraw('232,236,242', '255,255,255'),
+        flower_pink: flowerDraw('226,122,182', '250,178,216'),
+        flower_orange: flowerDraw('232,132,44', '252,176,96'),
+        flower_violet: flowerDraw('146,84,206', '190,140,240'),
+        // Upper half of tall grass: blades continue up and taper, no roots at the bottom.
+        tallgrass_top: (c, x, y) => {
+            const s = (X, Y, col) => { c.fillStyle = 'rgb(' + col + ')'; c.fillRect(x + X, y + Y, 1, 1); };
+            const G1 = '96,156,60', G2 = '78,132,48', G3 = '118,180,74';
+            const blades = [[3, 5, -1, G2], [5, 9, 0, G1], [7, 12, 1, G3],
+                            [9, 8, 0, G1], [11, 10, -1, G2], [13, 4, 1, G2]];
+            for (const [bx, hgt, lean, col] of blades) {
+                for (let i = 0; i < hgt; i++) {
+                    const Y = 15 - i;
+                    const X = bx + Math.round(lean * (i / hgt) * 3);
+                    if (X < 0 || X > 15) continue;
+                    s(X, Y, i > hgt - 4 ? G3 : col);
+                }
+            }
+        },
+        // Birch: pale bark with dark scoring, and lighter, airier leaves.
+        birch_side: (c, x, y) => blit(c, x, y, base(311, [216, 214, 202], 9, (m, r) => {
+            for (let k = 0; k < 7; k++) {                     // horizontal dark scars
+                const Y = (r() * 16) | 0, w = 2 + ((r() * 4) | 0), X = (r() * 12) | 0;
+                for (let i = 0; i < w; i++) dk(m, Y * 16 + ((X + i) & 15), 96);
+            }
+            for (let k = 0; k < 26; k++) dk(m, (r() * 256) | 0, 16);
+            for (let k = 0; k < 18; k++) lt(m, (r() * 256) | 0, 14);
+        })),
+        birch_top: (c, x, y) => blit(c, x, y, base(313, [206, 192, 154], 10, (m, r) => {
+            for (let ring = 1; ring < 7; ring += 2)
+                for (let a = 0; a < 40; a++) {
+                    const X = (8 + Math.cos(a / 40 * 6.28) * ring) | 0;
+                    const Y = (8 + Math.sin(a / 40 * 6.28) * ring) | 0;
+                    dk(m, Y * 16 + X, 24);
+                }
+            for (let k = 0; k < 16; k++) lt(m, (r() * 256) | 0, 14);
+        })),
+        door_lower: (c, x, y) => blit(c, x, y, base(521, [150, 110, 66], 8, (m, r) => {
+            for (let Y = 0; Y < 16; Y++) { dk(m, Y * 16, 40); dk(m, Y * 16 + 15, 40); }   // frame
+            for (let X = 2; X < 14; X++) dk(m, 15 * 16 + X, 30);
+            for (let Y = 3; Y < 13; Y++) for (const X of [3, 12]) dk(m, Y * 16 + X, 34);  // panel
+            for (let X = 3; X < 13; X++) { dk(m, 3 * 16 + X, 34); dk(m, 12 * 16 + X, 34); }
+            for (let k = 0; k < 26; k++) lt(m, (r() * 256) | 0, 12);
+            for (const [X, Y] of [[12, 8], [12, 9]]) lt(m, Y * 16 + X, 90);               // handle
+        })),
+        door_upper: (c, x, y) => blit(c, x, y, base(523, [150, 110, 66], 8, (m, r) => {
+            for (let Y = 0; Y < 16; Y++) { dk(m, Y * 16, 40); dk(m, Y * 16 + 15, 40); }
+            for (let X = 2; X < 14; X++) dk(m, X, 30);
+            for (let Y = 4; Y < 11; Y++) for (const X of [3, 12]) dk(m, Y * 16 + X, 34);
+            for (let X = 3; X < 13; X++) { dk(m, 4 * 16 + X, 34); dk(m, 10 * 16 + X, 34); }
+            for (let Y = 5; Y < 10; Y++) for (let X = 4; X < 12; X++) lt(m, Y * 16 + X, 26); // window
+            for (let k = 0; k < 20; k++) lt(m, (r() * 256) | 0, 10);
+        })),
+        birch_leaves: (c, x, y) => {
+            blit(c, x, y, base(317, [96, 140, 62], 11, (m, r) => {
+                for (let k = 0; k < 9; k++) blob(m, r, 2 + ((r() * 3) | 0), 24, 2);
+                for (let k = 0; k < 8; k++) {
+                    const i = (r() * 256) | 0;
+                    lt(m, i, 34); lt(m, (i + 1) & 255, 18);
+                }
+                for (let k = 0; k < 26; k++) dk(m, (r() * 256) | 0, 26);
+                for (let k = 0; k < 18; k++) {
+                    const i = (r() * 256) | 0;
+                    m[i] = [Math.min(255, m[i][0] + 40), Math.min(255, m[i][1] + 56), Math.min(255, m[i][2] + 26)];
+                }
+            }));
+            punchHoles(c, x, y, 421, 30);
+        }
     };
     // Atlas layout — the mesher bakes these indices into UVs, so ORDER MATTERS.
     const ORDER = ['grass_top', 'grass_side', 'dirt', 'stone', 'log_side', 'log_top', 'leaves',
@@ -364,7 +461,11 @@ const TexGen = (() => {
                    'sandstone_side', 'gravel', 'coal_ore', 'iron_ore', 'gold_ore', 'diamond_ore',
                    'crafting_top', 'crafting_side', 'bookshelf', 'mossy', 'obsidian',
                    'furnace_front', 'furnace_top', 'glass', 'torch', 'redstone_ore',
-                   'tallgrass', 'flower_red', 'flower_yellow'];  // append only: the mesher bakes these indices
+                   'tallgrass', 'flower_red', 'flower_yellow',
+                   'flower_blue', 'flower_white', 'flower_pink', 'flower_orange',
+                   'flower_violet', 'tallgrass_top',
+                   'birch_side', 'birch_top', 'birch_leaves',
+                   'door_lower', 'door_upper'];  // append only: the mesher bakes these indices
     function buildAtlas(canvas) {
         canvas.width = canvas.height = SIZE * GRID;
         const ctx = canvas.getContext('2d');
@@ -553,6 +654,98 @@ const TexGen = (() => {
             if ((x - 7.5) * (x - 7.5) + (y - 8) * (y - 8) < 14) px(ctx, 0, 0, x, y, 52, 40, 30);
         px(ctx, 0, 0, 6, 6, 96, 78, 58); px(ctx, 0, 0, 8, 9, 30, 22, 16);
     };
+    // Stair item icon: a stepped profile in the block's own colours, so the hotbar
+    // shows a STAIR and not an indistinguishable plain plank/cobble square.
+    const stairIcon = (lit, mid, dark) => ctx => {
+        const P = (x, y, c) => px(ctx, 0, 0, x, y, c[0], c[1], c[2]);
+        // bottom slab full width, upper step on the right half
+        for (let y = 9; y < 15; y++) for (let x = 2; x < 14; x++) P(x, y, mid);
+        for (let y = 3; y < 9; y++) for (let x = 8; x < 14; x++) P(x, y, mid);
+        for (let x = 2; x < 8; x++) { P(x, 9, lit); P(x, 10, lit); }   // tread of the lower step
+        for (let x = 8; x < 14; x++) { P(x, 3, lit); P(x, 4, lit); }   // tread of the upper step
+        for (let x = 2; x < 14; x++) P(x, 14, dark);                    // shadowed base
+        for (let y = 5; y < 9; y++) P(8, y, dark);                      // riser shadow
+        for (let y = 10; y < 15; y++) { P(2, y, dark); P(13, y, dark); }
+        for (let y = 4; y < 9; y++) P(13, y, dark);
+    };
+    CUSTOM.stairs_oak = stairIcon([196, 160, 104], [162, 126, 74], [112, 84, 46]);
+    CUSTOM.stairs_cobble = stairIcon([168, 168, 172], [128, 128, 132], [88, 88, 92]);
+    // Door item: a tall two-panel door, the way it looks in the inventory.
+    CUSTOM.door_item = ctx => {
+        const P = (x, y, c) => px(ctx, 0, 0, x, y, c[0], c[1], c[2]);
+        const W = [152, 112, 68], D = [104, 74, 42], L = [186, 146, 96];
+        for (let y = 1; y < 16; y++) for (let x = 4; x < 12; x++) P(x, y, W);
+        for (let y = 1; y < 16; y++) { P(4, y, D); P(11, y, D); }
+        for (let x = 4; x < 12; x++) { P(x, 1, L); P(x, 15, D); P(x, 8, D); }
+        for (let y = 3; y < 7; y++) for (const x of [6, 9]) P(x, y, D);
+        for (let x = 6; x < 10; x++) { P(x, 3, D); P(x, 6, D); }
+        for (let y = 10; y < 14; y++) for (const x of [6, 9]) P(x, y, D);
+        for (let x = 6; x < 10; x++) { P(x, 10, D); P(x, 13, D); }
+        P(10, 9, [214, 196, 120]); P(10, 10, [180, 160, 92]);   // handle
+    };
+    // Spawn egg: a rounded shell in the mob's own colours with contrasting speckles,
+    // so pig and zombie eggs are told apart at a glance in the hotbar.
+    const eggIcon = (shell, spot, hi) => ctx => {
+        const P = (x, y, c) => px(ctx, 0, 0, x, y, c[0], c[1], c[2]);
+        for (let y = 2; y < 15; y++) {
+            // egg profile: narrow at the top, widest low down
+            const t = (y - 2) / 12;
+            const w = 2.1 + 3.4 * Math.sin(Math.PI * Math.min(1, t * 0.92 + 0.08));
+            for (let x = 0; x < 16; x++) if (Math.abs(x - 7.5) <= w) P(x, y, shell);
+        }
+        for (const [x, y] of [[6, 4], [9, 6], [5, 8], [10, 9], [7, 11], [9, 12], [5, 12]]) {
+            P(x, y, spot);
+            if (y < 13) P(x, y + 1, spot);
+        }
+        for (const [x, y] of [[6, 3], [7, 3], [5, 5]]) P(x, y, hi);   // gloss
+    };
+    CUSTOM.egg_pig = eggIcon([239, 154, 159], [196, 96, 110], [255, 206, 210]);
+    CUSTOM.egg_zombie = eggIcon([106, 156, 106], [58, 94, 58], [166, 202, 166]);
+    // Faint monochrome silhouettes for the empty equipment slots.
+    const ghost = draw => ctx => {
+        const G = [104, 104, 110], D = [78, 78, 84];
+        draw((x, y, dark) => px(ctx, 0, 0, x, y, ...(dark ? D : G)));
+    };
+    CUSTOM.slot_helmet = ghost(P => {
+        for (let x = 4; x < 12; x++) P(x, 4);
+        for (let y = 5; y < 9; y++) { P(3, y); P(4, y); P(11, y); P(12, y); if (y < 7) for (let x = 5; x < 11; x++) P(x, y); }
+        for (let x = 5; x < 11; x++) P(x, 3, true);
+    });
+    CUSTOM.slot_chest = ghost(P => {
+        for (let y = 3; y < 12; y++) for (let x = 4; x < 12; x++) { if (y < 6 && x > 6 && x < 9) continue; P(x, y, y < 5); }
+        P(3, 3); P(12, 3); P(3, 4); P(12, 4);
+    });
+    CUSTOM.slot_legs = ghost(P => {
+        for (let x = 4; x < 12; x++) { P(x, 3); P(x, 4); }
+        for (let y = 5; y < 13; y++) { P(4, y); P(5, y); P(6, y, true); P(9, y, true); P(10, y); P(11, y); }
+    });
+    CUSTOM.slot_boots = ghost(P => {
+        for (let y = 9; y < 13; y++) for (const x of [3, 4, 5, 10, 11, 12]) P(x, y);
+        for (const x of [3, 4, 5, 6, 10, 11, 12, 13]) P(x, 13, true);
+    });
+    CUSTOM.slot_offhand = ghost(P => {          // an open hand
+        for (let y = 6; y < 12; y++) for (let x = 5; x < 11; x++) P(x, y);
+        for (const x of [5, 7, 9]) { P(x, 4); P(x, 5); }
+        for (let y = 12; y < 14; y++) for (let x = 6; x < 10; x++) P(x, y, true);
+    });
+    CUSTOM.shears = ctx => {   // two crossed iron blades over dark handles
+        const P = (x, y, c) => px(ctx, 0, 0, x, y, c[0], c[1], c[2]);
+        const IR = [206, 210, 216], IRD = [140, 146, 156], IRL = [242, 246, 252];
+        const GR = [86, 92, 104], GRD = [56, 60, 70];
+        for (let i = 0; i < 7; i++) {                 // blades crossing near the middle
+            P(3 + i, 11 - i, i > 2 ? IRL : IR);
+            P(4 + i, 11 - i, IR);
+            P(4 + i, 12 - i, IRD);
+        }
+        for (let i = 0; i < 7; i++) {
+            P(12 - i, 11 - i, i > 2 ? IRL : IR);
+            P(11 - i, 11 - i, IR);
+            P(11 - i, 12 - i, IRD);
+        }
+        for (const [x, y] of [[3, 13], [4, 14], [3, 14], [11, 13], [12, 14], [11, 14]]) P(x, y, GR);
+        for (const [x, y] of [[2, 13], [2, 14], [4, 15], [12, 13], [13, 14], [11, 15]]) P(x, y, GRD);
+        P(7, 8, IRD); P(8, 8, IRD);                   // pivot rivet
+    };
     CUSTOM.redstone = ctx => { // dust pile
         for (let x = 4; x < 12; x++) px(ctx, 0, 0, x, 11, 190, 40, 30);
         for (let x = 5; x < 11; x++) px(ctx, 0, 0, x, 10, 224, 58, 44);
@@ -645,7 +838,26 @@ const ItemDB = (() => {
     B('tall_grass', 'Grass', 25, 'tallgrass');
     B('flower_red', 'Poppy', 26, 'flower_red');
     B('flower_yellow', 'Dandelion', 27, 'flower_yellow');
+    B('flower_blue', 'Cornflower', 28, 'flower_blue');
+    B('flower_white', 'Oxeye Daisy', 29, 'flower_white');
+    B('flower_pink', 'Pink Tulip', 30, 'flower_pink');
+    B('flower_orange', 'Orange Tulip', 31, 'flower_orange');
+    B('flower_violet', 'Allium', 32, 'flower_violet');
+    B('wooden_door', 'Oak Door', 49, 'door_item');
+    B('plank_stairs', 'Oak Stairs', 41, 'stairs_oak');
+    B('cobble_stairs', 'Cobblestone Stairs', 45, 'stairs_cobble');
+    B('birch_log', 'Birch Log', 39, 'birch_side');
+    B('birch_leaves', 'Birch Leaves', 40, 'birch_leaves');
     def({ id: 'stick', name: 'Stick', type: 'Material', stack: 64, icon: 'stick' });
+    // Spawn eggs. `spawnEgg` names the mob; right-clicking a block drops one there.
+    def({ id: 'egg_pig', name: 'Pig Spawn Egg', type: 'Material', stack: 16,
+          icon: 'egg_pig', spawnEgg: 'pig' });
+    def({ id: 'egg_zombie', name: 'Zombie Spawn Egg', type: 'Material', stack: 16,
+          icon: 'egg_zombie', spawnEgg: 'zombie' });
+    // Shears: a Tool so durability and the held-sprite angle work, but tool:'shears'
+    // means they satisfy no mining requirement — they exist to harvest foliage intact.
+    def({ id: 'shears', name: 'Shears', type: 'Tool', stack: 1, icon: 'shears',
+          tool: 'shears', tier: 1, dur: 238, damage: 1 });
     def({ id: 'coal', name: 'Coal', type: 'Material', stack: 64, icon: 'coal' });
     def({ id: 'charcoal', name: 'Charcoal', type: 'Material', stack: 64, icon: 'charcoal' });
     def({ id: 'redstone', name: 'Redstone Dust', type: 'Material', stack: 64, icon: 'redstone' });
@@ -789,6 +1001,11 @@ const Crafting = (() => {
     SL(['cobblestone', 'leaves'], 'mossy_cobblestone', 1);
     S(['C', 'S'], { C: 'coal', S: 'stick' }, 'torch', 4);      // coal above stick -> 4 torches
     S(['C', 'S'], { C: 'charcoal', S: 'stick' }, 'torch', 4);  // charcoal variant
+    S([' I', 'I '], { I: 'iron_ingot' }, 'shears', 1);         // MC's diagonal iron pair
+    // stairs: MC's staircase shape, 6 blocks in -> 4 stairs out
+    S(['M  ', 'MM ', 'MMM'], { M: 'plank' }, 'plank_stairs', 4);
+    S(['M  ', 'MM ', 'MMM'], { M: 'cobblestone' }, 'cobble_stairs', 4);
+    S(['MM', 'MM', 'MM'], { M: 'plank' }, 'wooden_door', 3);   // 6 planks -> 3 doors
     // --- tools (real MC shapes) for every material tier ---
     const TM = { wood: 'plank', stone: 'cobblestone', iron: 'iron_ingot', gold: 'gold_ingot', diamond: 'diamond' };
     for (const mat in TM) {
@@ -867,6 +1084,13 @@ class InventoryUI {
             this.handle(slot.dataset.s, +slot.dataset.i, e.button, e.shiftKey);
         });
         opts.panel.addEventListener('contextmenu', e => e.preventDefault());
+        // Mouse hover drives the same highlight the pad does. Previously the pointer had
+        // no on-screen presence inside the panel, so with a controller you couldn't tell
+        // what was selected — and with a mouse the two could disagree.
+        opts.panel.addEventListener('mousemove', e => {
+            const slot = e.target.closest && e.target.closest('.slot');
+            if (slot && slot !== this.focusEl) this.setFocus(slot);
+        });
         window.addEventListener('mousemove', e => {
             this.o.cursorEl.style.left = (e.clientX + 6) + 'px';
             this.o.cursorEl.style.top = (e.clientY + 6) + 'px';
@@ -927,15 +1151,21 @@ class InventoryUI {
         this.handle(this.focusEl.dataset.s, +this.focusEl.dataset.i, button, !!shift);
     }
 
-    static slotHtml(s, i) {
-        return '<div class="slot" data-s="' + s + '" data-i="' + i +
-            '"><img draggable="false"><span class="cnt"></span><b class="durbar"><i></i></b></div>';
+    // `ghost` is a faint outline shown only while the slot is EMPTY, so a player can
+    // see at a glance that a square wants a helmet rather than staring at four
+    // identical blank boxes.
+    static slotHtml(s, i, ghost) {
+        return '<div class="slot" data-s="' + s + '" data-i="' + i + '">' +
+            (ghost ? '<img class="ghost" draggable="false" src="' + TexGen.icon(ghost) + '">' : '') +
+            '<img draggable="false"><span class="cnt"></span><b class="durbar"><i></i></b></div>';
     }
     static buildPanel(panel) {
         const slot = InventoryUI.slotHtml;
         let h = '<div class="invTitle"></div><div class="invTop"><div class="invArmor">';
-        for (let i = 0; i < 4; i++) h += slot('armor', i);
-        h += slot('offhand', 0) + '</div><div class="invCraft"><div class="craftGrid"></div>' +
+        // helmet, chestplate, leggings, boots — in the order armorSlot uses
+        const GHOST = ['slot_helmet', 'slot_chest', 'slot_legs', 'slot_boots'];
+        for (let i = 0; i < 4; i++) h += slot('armor', i, GHOST[i]);
+        h += slot('offhand', 0, 'slot_offhand') + '</div><div class="invCraft"><div class="craftGrid"></div>' +
              '<div class="craftArrow">&#10132;</div>' + slot('craftOut', 0) + '</div></div>' +
              '<div class="furnGrid hidden"><div class="furnCol">' + slot('fIn', 0) +
              '<div class="fuelBar"><i></i></div>' + slot('fFuel', 0) + '</div>' +
@@ -1152,7 +1382,10 @@ class InventoryUI {
         } else c.classList.add('hidden');
     }
     static renderSlot(el, s) {
-        const img = el.querySelector('img'), cnt = el.querySelector('.cnt');
+        // the ghost hint is the FIRST img; the real item icon is the last one
+        const imgs = el.querySelectorAll('img');
+        const img = imgs[imgs.length - 1], cnt = el.querySelector('.cnt');
+        el.classList.toggle('filled', !!s);      // hides the ghost once something's in it
         if (s) { img.src = ItemDB.iconURI(s.id); img.style.display = 'block'; cnt.textContent = s.n > 1 ? s.n : ''; }
         else { img.style.display = 'none'; cnt.textContent = ''; }
         const bar = el.querySelector('.durbar');

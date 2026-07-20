@@ -51,6 +51,12 @@ whole stack), `E` inventory, `1`–`9` or scroll to pick a hotbar slot.
 place key picks up/puts down a stack, and your dig key takes a single item. On a gamepad:
 d-pad or left stick to move, **A** to take/place, **B** for one item, **X** to shift-click.
 
+**`F3`** toggles a coordinate readout. In split-screen each half gets its own panel showing
+that player's position plus where everyone else is and how far away — handy for regrouping.
+
+Everyone spawns and respawns somewhere inside a 26-block radius of the world spawn, so you
+always start near each other without landing on top of one another.
+
 Gamepads are auto-detected and assignable to either player in Settings. All keys are rebindable.
 
 ## Running locally
